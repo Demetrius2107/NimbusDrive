@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Card, Upload, Button, Table, Progress, App, Space } from 'antd'
-import { UploadOutlined, FolderOutlined } from '@ant-design/icons'
+import { UploadOutlined, FolderOutlined, FileOutlined } from '@ant-design/icons'
 import { uploadFile, type UploadProgress } from '../lib/uploader'
+import { palette } from '../theme'
 
 interface FileRow {
   key: string
@@ -42,36 +43,68 @@ export function FilesPage() {
   }
 
   const columns = [
-    { title: '文件名', dataIndex: 'name', render: (n: string) => <Space><FolderOutlined />{n}</Space> },
+    {
+      title: '文件名',
+      dataIndex: 'name',
+      render: (n: string) => (
+        <Space>
+          <FolderOutlined style={{ color: palette.accent }} />
+          {n}
+        </Space>
+      ),
+    },
     {
       title: '大小',
       dataIndex: 'size',
-      render: (s: number) => formatSize(s),
+      render: (s: number) => <span style={{ color: palette.textSecondary }}>{formatSize(s)}</span>,
     },
     {
       title: '进度',
       dataIndex: 'percent',
       render: (p: number, r: FileRow) =>
-        r.phase === 'error' ? <span style={{ color: 'red' }}>失败</span> : <Progress percent={Math.round(p)} size="small" />,
+        r.phase === 'error' ? (
+          <span style={{ color: '#ef4444', fontSize: 13 }}>失败</span>
+        ) : (
+          <Progress
+            percent={Math.round(p)}
+            size="small"
+            strokeColor={{ from: palette.primary, to: palette.accent }}
+          />
+        ),
     },
   ]
 
   return (
     <Card
-      title="我的文件"
+      title={
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
+          <FileOutlined style={{ color: palette.primary }} />
+          我的文件
+        </span>
+      }
       extra={
-        <Upload
-          beforeUpload={handleUpload}
-          showUploadList={false}
-          multiple
-        >
-          <Button type="primary" icon={<UploadOutlined />}>
+        <Upload beforeUpload={handleUpload} showUploadList={false} multiple>
+          <Button
+            type="primary"
+            icon={<UploadOutlined />}
+            style={{
+              background: palette.gradientPrimary,
+              border: 'none',
+              fontWeight: 600,
+              boxShadow: '0 2px 10px rgba(99,102,241,0.3)',
+            }}
+          >
             上传文件
           </Button>
         </Upload>
       }
     >
-      <Table columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} />
+      <Table
+        columns={columns}
+        dataSource={rows}
+        pagination={{ pageSize: 20 }}
+        locale={{ emptyText: '暂无文件，点击右上角上传' }}
+      />
     </Card>
   )
 }
