@@ -168,6 +168,30 @@ func (r *FileRepo) Rename(ctx context.Context, id int64, name string) error {
 	return nil
 }
 
+// HardDelete 物理删除文件节点（取消上传时清理 init 状态占位文件用）。
+func (r *FileRepo) HardDelete(ctx context.Context, id int64) error {
+	const q = `DELETE FROM files WHERE id = $1`
+	res, err := r.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("hard delete file: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateSize 更新文件实际大小（合并完成时用）。
+func (r *FileRepo) UpdateSize(ctx context.Context, id int64, size int64) error {
+	const q = `UPDATE files SET size = $2 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, q, id, size)
+	if err != nil {
+		return fmt.Errorf("update file size: %w", err)
+	}
+	return nil
+}
+
 // Subtree 用递归 CTE 查询某文件夹下所有后代（含子文件夹与文件）。
 // 设计文档 4.9 节子树查询。
 func (r *FileRepo) Subtree(ctx context.Context, folderID int64) ([]domain.FileNode, error) {

@@ -15,3 +15,29 @@ body,
   padding: 0;
   height: 100%;
 }
+
+/* 自定义滚动条：呼应渐变主色 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3b82f6 0%, #8b5cf6 100%);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #2563eb 0%, #7c3aed 100%);
+}
+
+/* 全局过渡：让 Antd 组件状态切换更顺滑 */
+.ant-btn,
+.ant-card,
+.ant-menu-item {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
