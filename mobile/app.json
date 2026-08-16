@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "NimbusDrive",
+    "slug": "nimbusdrive",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#1677ff",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.nimbusdrive.app"
+    },
+    "android": {
+      "package": "com.nimbusdrive.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": ["expo-document-picker"],
+    "extra": {
+      "apiBase": "http://localhost:8080/api/v1"
+    }
+  }
+}

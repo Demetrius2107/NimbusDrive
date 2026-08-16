@@ -1,0 +1,48 @@
+# === Go ===
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# === Node / 前端构建产物 ===
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# === Expo / React Native ===
+.expo/
+.expo-shared/
+*.tsbuildinfo
+ios/
+android/
+web-build/
+
+# === 配置与环境（含敏感信息，不入库） ===
+configs/config.prod.yaml
+configs/config.local.yaml
+.env
+.env.*
+!.env.example
+
+# === 日志与运行时 ===
+logs/
+*.log
+
+# === IDE / 编辑器 ===
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# === OS ===
+__pycache__/
+*.pyc

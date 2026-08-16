@@ -1,0 +1,52 @@
+# NimbusDrive 开发环境配置
+# 生产环境用 config.prod.yaml，敏感字段用环境变量覆盖（NIMBUS_ 前缀）。
+
+app:
+  name: NimbusDrive
+  env: dev
+  log_level: debug
+  log_dir: ./logs
+  storage_mode: minio
+
+api_server:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout_sec: 30
+  write_timeout_sec: 30
+
+transfer_server:
+  host: 0.0.0.0
+  port: 8081
+  read_timeout_sec: 300
+  write_timeout_sec: 300
+
+postgres:
+  host: 127.0.0.1
+  port: 5432
+  user: nimbus
+  password: nimbus
+  database: nimbusdrive
+  ssl_mode: disable
+  max_open_conns: 50
+  max_idle_conns: 10
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: ""
+  db: 0
+
+minio:
+  endpoint: 127.0.0.1:9000
+  access_key: minioadmin
+  secret_key: minioadmin
+  bucket: nimbus-drive
+  use_ssl: false
+  region: us-east-1
+  presign_expire_sec: 3600
+
+jwt:
+  secret: change-me-in-prod
+  access_exp_min: 120
+  refresh_exp_day: 30
+  issuer: nimbusdrive
