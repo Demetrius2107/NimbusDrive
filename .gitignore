@@ -46,3 +46,7 @@ Thumbs.db
 # === OS ===
 __pycache__/
 *.pyc
+
+# === 本地工具/IDE 会话状态（不入库） ===
+.atomcode/
+.zcode/
