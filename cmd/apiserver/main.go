@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/Demetrius2107/NimbusDrive/internal/adminstore"
+	"github.com/Demetrius2107/NimbusDrive/internal/auth"
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
+	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
@@ -69,7 +71,8 @@ func main() {
 		middleware.GinRecovery(),
 	)
 
-	registerRoutes(r, st, rc, adb)
+	jwtMgr := auth.New(cfg.JWT.Secret, cfg.JWT.AccessExpMin, cfg.JWT.RefreshExpDay, cfg.JWT.Issuer)
+	registerRoutes(r, st, rc, adb, jwtMgr)
 
 	srv := &http.Server{
 		Addr:         cfg.APIServer.Addr(),
@@ -97,13 +100,24 @@ func main() {
 	logger.L.Info("apiserver stopped")
 }
 
-func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB) {
+func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager) {
 	r.GET("/healthz", healthz(st, rc))
 
 	v1 := r.Group("/api/v1")
 	{
-		// 鉴权模块
-		_ = v1.Group("/auth")
+		// 鉴权模块：register/login 公开，me 需鉴权
+		if st != nil {
+			authHandler := handler.NewAuthHandler(st.Repos().Users, jwtMgr)
+			authGrp := v1.Group("/auth")
+			{
+				authGrp.POST("/register", authHandler.Register)
+				authGrp.POST("/login", authHandler.Login)
+				authGrp.GET("/me", middleware.GinJWTAuth(jwtMgr), authHandler.Me)
+			}
+		} else {
+			logger.L.Warn("postgres unavailable, /auth routes disabled")
+		}
+
 		// 用户模块
 		_ = v1.Group("/users")
 		// 文件元数据模块
