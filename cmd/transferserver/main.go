@@ -10,8 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Demetrius2107/NimbusDrive/internal/auth"
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
+	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
@@ -57,6 +59,8 @@ func main() {
 		logger.L.Warn("minio unavailable, running in degraded mode", zap.Error(err))
 	}
 
+	jwtMgr := auth.New(cfg.JWT.Secret, cfg.JWT.AccessExpMin, cfg.JWT.RefreshExpDay, cfg.JWT.Issuer)
+
 	h := server.Default(
 		server.WithHostPorts(cfg.Transfer.Addr()),
 		server.WithReadTimeout(time.Duration(cfg.Transfer.ReadTimeout)*time.Second),
@@ -68,7 +72,7 @@ func main() {
 		middleware.HertzRecovery(),
 	)
 
-	registerRoutes(h, st, rc, mc)
+	registerRoutes(h, st, rc, mc, jwtMgr)
 
 	go func() {
 		h.Spin()
@@ -84,16 +88,26 @@ func main() {
 	logger.L.Info("transferserver stopped")
 }
 
-func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO) {
+func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager) {
 	h.GET("/healthz", healthz(st, rc, mc))
 
 	v1 := h.Group("/api/v1")
-	{
-		// 上传模块
-		_ = v1.Group("/upload")
-		// 下载模块
-		_ = v1.Group("/download")
+
+	// 上传模块：受 JWT 鉴权保护。
+	upload := v1.Group("/upload", middleware.HertzJWTAuth(jwtMgr))
+	if st != nil && mc != nil {
+		uh := handler.NewUploadHandler(st.Repos(), mc, st.DB)
+		upload.POST("/check-hash", uh.CheckHash)
+		upload.PUT("/:sessionId/chunks/:index", uh.UploadChunk)
+		upload.GET("/:sessionId", uh.GetUploadStatus)
+		upload.POST("/:sessionId/complete", uh.CompleteUpload)
+		upload.DELETE("/:sessionId", uh.CancelUpload)
+	} else {
+		logger.L.Warn("upload routes disabled: store or minio unavailable")
 	}
+
+	// 下载模块（feat/download 分支实现）。
+	_ = v1.Group("/download")
 }
 
 // healthz 健康检查：检查 PG/Redis/MinIO 连通性。
