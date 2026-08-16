@@ -106,8 +106,15 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 		logger.L.Warn("upload routes disabled: store or minio unavailable")
 	}
 
-	// 下载模块（feat/download 分支实现）。
-	_ = v1.Group("/download")
+	// 下载模块：受 JWT 鉴权保护。
+	download := v1.Group("/download", middleware.HertzJWTAuth(jwtMgr))
+	if st != nil && mc != nil {
+		dh := handler.NewDownloadHandler(st.Repos(), mc)
+		download.GET("/:fileId", dh.Download)
+		download.HEAD("/:fileId", dh.Head)
+	} else {
+		logger.L.Warn("download routes disabled: store or minio unavailable")
+	}
 }
 
 // healthz 健康检查：检查 PG/Redis/MinIO 连通性。
