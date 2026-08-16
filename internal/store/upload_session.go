@@ -19,12 +19,12 @@ type UploadSessionRepo struct {
 // Create 创建上传会话。返回会话 ID。
 func (r *UploadSessionRepo) Create(ctx context.Context, s *domain.UploadSession) (string, error) {
 	const q = `
-		INSERT INTO upload_sessions (user_id, file_id, hash_sha256, total_size, chunk_size, total_chunks, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'active')
+		INSERT INTO upload_sessions (user_id, file_id, hash_sha256, total_size, chunk_size, total_chunks, upload_id, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
 		RETURNING id`
 	var id string
 	err := r.db.GetContext(ctx, &id, q,
-		s.UserID, s.FileID, s.HashSHA256, s.TotalSize, s.ChunkSize, s.TotalChunks,
+		s.UserID, s.FileID, s.HashSHA256, s.TotalSize, s.ChunkSize, s.TotalChunks, s.UploadID,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert upload_session: %w", err)
@@ -35,7 +35,7 @@ func (r *UploadSessionRepo) Create(ctx context.Context, s *domain.UploadSession)
 // Get 按 ID 查会话。
 func (r *UploadSessionRepo) Get(ctx context.Context, id string) (*domain.UploadSession, error) {
 	const q = `SELECT id, user_id, file_id, hash_sha256, total_size, chunk_size, total_chunks,
-		uploaded_chunks, status, expires_at, created_at, updated_at
+		uploaded_chunks, upload_id, status, expires_at, created_at, updated_at
 		FROM upload_sessions WHERE id = $1`
 	var s domain.UploadSession
 	if err := r.db.GetContext(ctx, &s, q, id); err != nil {

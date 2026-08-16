@@ -88,6 +88,7 @@ type UploadSession struct {
 	ChunkSize       int                  `db:"chunk_size" json:"chunk_size"`
 	TotalChunks     int                  `db:"total_chunks" json:"total_chunks"`
 	UploadedChunks  []byte               `db:"uploaded_chunks" json:"uploaded_chunks,omitempty"`
+	UploadID        string               `db:"upload_id" json:"upload_id"`
 	Status          UploadSessionStatus  `db:"status" json:"status"`
 	ExpiresAt       string               `db:"expires_at" json:"expires_at"`
 	CreatedAt       string               `db:"created_at" json:"created_at"`
