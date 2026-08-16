@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { Card, Upload, Button, Table, Progress, App, Space } from 'antd'
-import { UploadOutlined, FolderOutlined, FileOutlined } from '@ant-design/icons'
+import { UploadOutlined, FolderOutlined, FileOutlined, DownloadOutlined } from '@ant-design/icons'
 import { uploadFile, type UploadProgress } from '../lib/uploader'
+import { downloadFile, extractDownloadError } from '../lib/downloader'
 import { palette } from '../theme'
 
 interface FileRow {
   key: string
+  fileId: number | null
   name: string
   size: number
   percent: number
@@ -15,11 +17,12 @@ interface FileRow {
 export function FilesPage() {
   const { message } = App.useApp()
   const [rows, setRows] = useState<FileRow[]>([])
+  const [downloading, setDownloading] = useState<Set<string>>(new Set())
 
   const handleUpload = async (file: File) => {
     const key = `${file.name}-${file.size}-${Date.now()}`
     setRows((prev) => [
-      { key, name: file.name, size: file.size, percent: 0, phase: 'hashing' },
+      { key, fileId: null, name: file.name, size: file.size, percent: 0, phase: 'hashing' },
       ...prev,
     ])
     try {
@@ -31,6 +34,10 @@ export function FilesPage() {
           )
         },
       })
+      // 上传成功后记录 fileId，供下载使用。
+      setRows((prev) =>
+        prev.map((r) => (r.key === key ? { ...r, fileId: result.fileId } : r)),
+      )
       message.success(result.instant ? `${file.name} 秒传成功` : `${file.name} 上传完成`)
     } catch (e) {
       const err = e as Error
@@ -40,6 +47,27 @@ export function FilesPage() {
       message.error(`${file.name} 上传失败：${err.message}`)
     }
     return false // 阻止 antd 默认上传行为
+  }
+
+  const handleDownload = async (row: FileRow) => {
+    if (!row.fileId) {
+      message.warning('文件尚未上传完成，无法下载')
+      return
+    }
+    setDownloading((prev) => new Set(prev).add(row.key))
+    try {
+      await downloadFile({ fileId: row.fileId, fileName: row.name })
+      message.success(`${row.name} 下载已开始`)
+    } catch (e) {
+      const msg = await extractDownloadError(e)
+      message.error(`${row.name} 下载失败：${msg}`)
+    } finally {
+      setDownloading((prev) => {
+        const next = new Set(prev)
+        next.delete(row.key)
+        return next
+      })
+    }
   }
 
   const columns = [
@@ -71,6 +99,21 @@ export function FilesPage() {
             strokeColor={{ from: palette.primary, to: palette.accent }}
           />
         ),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 80,
+      render: (_: unknown, r: FileRow) => (
+        <Button
+          type="text"
+          size="small"
+          icon={<DownloadOutlined />}
+          loading={downloading.has(r.key)}
+          disabled={r.fileId === null || r.phase === 'error'}
+          onClick={() => handleDownload(r)}
+        />
+      ),
     },
   ]
 
