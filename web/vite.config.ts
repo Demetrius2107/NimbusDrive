@@ -12,10 +12,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // 开发期将 /api 代理到 APIServer(Gin)，/api/v1/upload 与 /api/v1/download
-    // 在生产由反向代理路由到 TransferServer(Hertz)；开发期为简化前端联调，
-    // 一并代理到 APIServer，待 TransferServer 接口实现后再分流。
+    // 开发期代理分流：/api/v1/upload 与 /api/v1/download → TransferServer(Hertz :8081)，
+    // 其余 /api → APIServer(Gin :8080)。生产由反向代理按同样规则路由。
     proxy: {
+      '/api/v1/upload': {
+        target: 'http://localhost:8081',
+        changeOrigin: true,
+      },
+      '/api/v1/download': {
+        target: 'http://localhost:8081',
+        changeOrigin: true,
+      },
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
