@@ -5,12 +5,17 @@ import { TrashPage } from './pages/TrashPage'
 import { SharesPage } from './pages/SharesPage'
 import { QuotaPage } from './pages/QuotaPage'
 import { LoginPage } from './pages/LoginPage'
+import { ShareViewPage } from './pages/ShareViewPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 
 export const router = createBrowserRouter([
   {
     path: '/login',
     element: <LoginPage />,
+  },
+  {
+    path: '/s/:id',
+    element: <ShareViewPage />,
   },
   {
     path: '/',
