@@ -11,13 +11,14 @@ import (
 
 // Config 是全局配置根。
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	APIServer ServerConfig  `mapstructure:"api_server"`
-	Transfer  ServerConfig  `mapstructure:"transfer_server"`
-	Postgres  PostgresConfig `mapstructure:"postgres"`
-	Redis     RedisConfig   `mapstructure:"redis"`
-	MinIO     MinIOConfig   `mapstructure:"minio"`
-	JWT       JWTConfig     `mapstructure:"jwt"`
+	App       AppConfig       `mapstructure:"app"`
+	APIServer ServerConfig    `mapstructure:"api_server"`
+	Transfer  ServerConfig    `mapstructure:"transfer_server"`
+	Postgres  PostgresConfig  `mapstructure:"postgres"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	MinIO     MinIOConfig     `mapstructure:"minio"`
+	JWT       JWTConfig       `mapstructure:"jwt"`
+	EventBus  EventBusConfig  `mapstructure:"event_bus"`
 }
 
 type AppConfig struct {
@@ -83,6 +84,17 @@ type JWTConfig struct {
 	Issuer        string `mapstructure:"issuer"`
 }
 
+// EventBusConfig 描述 Redis Streams 事件总线参数。
+type EventBusConfig struct {
+	StreamPrefix  string `mapstructure:"stream_prefix"`   // stream 名前缀，如 "nimbus:events:"
+	ConsumerGroup string `mapstructure:"consumer_group"`  // 消费者组名
+	BufferSize    int    `mapstructure:"buffer_size"`     // Emitter channel 缓冲大小
+	MaxRetries    int    `mapstructure:"max_retries"`     // 毒丸阈值：超过此次数进 DLQ
+	BlockMs       int    `mapstructure:"block_ms"`        // XREADGROUP block 毫秒
+	DLQPrefix     string `mapstructure:"dlq_prefix"`      // 死信队列 stream 前缀
+	StreamMaxLen  int64  `mapstructure:"stream_max_len"`  // 每条 stream 近似上限（XADD MAXLEN ~）
+}
+
 // Load 从 configs/ 目录读取指定名称的 yaml，并叠加同名环境变量覆盖。
 // name 不含扩展名，如 "config.dev"。
 func Load(name string) (*Config, error) {
@@ -96,6 +108,15 @@ func Load(name string) (*Config, error) {
 	v.SetEnvPrefix("NIMBUS")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+
+	// 事件总线默认值（yaml 未配置时仍可用）
+	v.SetDefault("event_bus.stream_prefix", "nimbus:events:")
+	v.SetDefault("event_bus.consumer_group", "nimbus-workers")
+	v.SetDefault("event_bus.buffer_size", 1024)
+	v.SetDefault("event_bus.max_retries", 3)
+	v.SetDefault("event_bus.block_ms", 2000)
+	v.SetDefault("event_bus.dlq_prefix", "nimbus:dlq:")
+	v.SetDefault("event_bus.stream_max_len", 10000)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", name, err)

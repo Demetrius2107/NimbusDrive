@@ -17,6 +17,8 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
 	"github.com/Demetrius2107/NimbusDrive/internal/contract"
+	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
+	"github.com/Demetrius2107/NimbusDrive/internal/eventbus/consumers"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
@@ -64,6 +66,17 @@ func main() {
 	}
 	defer func() { _ = adb.Close() }()
 
+	// 操作日志聚合器：admin 操作 + 事件驱动审计共用。
+	// 在事件总线之前构造（审计消费者依赖它），关闭顺序在事件总线之后。
+	var la *adminstore.LogAggregator
+	if adb != nil {
+		if err := adb.Migrate(ctx); err != nil {
+			logger.L.Warn("admin migrate failed", zap.Error(err))
+		}
+		la = adminstore.NewLogAggregator(adb.GORM, 1024, 50, 5*time.Second)
+		defer la.Close()
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(
@@ -79,7 +92,50 @@ func main() {
 	if err != nil {
 		logger.L.Fatal("contract registry init failed", zap.Error(err))
 	}
-	registerRoutes(r, st, rc, adb, jwtMgr, reg)
+
+	// 事件总线：Redis 可用时启动 Emitter + 消费者。
+	// 关闭顺序（LIFO）：消费者 → emitter → la.Close → rc.Close（均 defer）。
+	var emitter *eventbus.Emitter
+	var consumerClosers []func()
+	if rc != nil {
+		emitter = eventbus.NewEmitter(rc.Client, cfg.EventBus.StreamPrefix, cfg.EventBus.BufferSize, cfg.EventBus.StreamMaxLen)
+		defer emitter.Close() // 在消费者 Close 之后执行
+
+		consumerCfg := consumers.Config{
+			StreamPrefix:  cfg.EventBus.StreamPrefix,
+			ConsumerGroup: cfg.EventBus.ConsumerGroup,
+			MaxRetries:    cfg.EventBus.MaxRetries,
+			BlockMs:       cfg.EventBus.BlockMs,
+			DLQPrefix:     cfg.EventBus.DLQPrefix,
+		}
+		// 4 个消费者：审计（需 LogAggregator）、上传统计、配额对账、no-op 骨架
+		builders := []struct {
+			name    string
+			builder consumers.ConsumerBuilder
+		}{
+			{"api-audit", consumers.NewAuditConsumer(la)},
+			{"api-upload-stats", consumers.NewUploadStatsConsumer(rc.Client)},
+			{"api-quota-reconcile", consumers.NewQuotaReconcileConsumer(st.DB, rc.Client)},
+			{"api-noop", consumers.NewNoopConsumer()},
+		}
+		for _, b := range builders {
+			c := consumers.Build(rc.Client, consumerCfg, b.builder, b.name)
+			if err := c.Start(); err != nil {
+				logger.L.Error("consumer start failed", zap.String("name", b.name), zap.Error(err))
+				continue
+			}
+			consumerClosers = append(consumerClosers, c.Close)
+		}
+		// 消费者最先关闭（后注册先执行，在 emitter.Close 之前）
+		defer func() {
+			for _, closeFn := range consumerClosers {
+				closeFn()
+			}
+		}()
+	} else {
+		logger.L.Warn("event bus disabled: redis unavailable")
+	}
+	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la)
 
 	srv := &http.Server{
 		Addr:         cfg.APIServer.Addr(),
@@ -107,14 +163,14 @@ func main() {
 	logger.L.Info("apiserver stopped")
 }
 
-func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry) {
+func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator) {
 	r.GET("/healthz", healthz(st, rc))
 
 	v1 := r.Group("/api/v1")
 	{
 		// 鉴权模块：register/login 公开，me 需鉴权
 		if st != nil {
-			authHandler := handler.NewAuthHandler(st.Repos().Users, jwtMgr)
+			authHandler := handler.NewAuthHandler(st.Repos().Users, jwtMgr, emitter)
 			authGrp := v1.Group("/auth")
 			{
 				authGrp.POST("/register", authHandler.Register)
@@ -147,7 +203,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 			}
 
 			// 分享模块：创建挂在 /files/:id/share，管理挂在 /shares，公开访问挂在 /s
-			sh := handler.NewShareHandler(st.Repos().Shares, st.Repos().Files, rc, st.DB)
+			sh := handler.NewShareHandler(st.Repos().Shares, st.Repos().Files, rc, st.DB, emitter)
 			filesGrp.POST("/:id/share", middleware.GinContract(reg, contract.ShareCreate), sh.CreateShare)
 			sharesGrp := v1.Group("/shares", middleware.GinJWTAuth(jwtMgr))
 			{
@@ -165,13 +221,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 		}
 
 		// 管理端模块：受 JWT + AdminOnly 双中间件保护
-		if adb != nil {
-			if err := adb.Migrate(context.Background()); err != nil {
-				logger.L.Warn("admin migrate failed", zap.Error(err))
-			}
-			la := adminstore.NewLogAggregator(adb.GORM, 1024, 50, 5*time.Second)
-			defer la.Close()
-
+		if adb != nil && la != nil {
 			ah := handler.NewAdminHandler(
 				adminstore.NewUserRepo(adb.GORM),
 				adminstore.NewFileRepo(adb.GORM),

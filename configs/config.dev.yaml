@@ -50,3 +50,12 @@ jwt:
   access_exp_min: 120
   refresh_exp_day: 30
   issuer: nimbusdrive
+
+event_bus:
+  stream_prefix: "nimbus:events:"
+  consumer_group: "nimbus-workers"
+  buffer_size: 1024
+  max_retries: 3
+  block_ms: 2000
+  dlq_prefix: "nimbus:dlq:"
+  stream_max_len: 10000
