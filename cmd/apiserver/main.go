@@ -156,8 +156,32 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 		} else {
 			logger.L.Warn("postgres unavailable, /files /trash /shares /s routes disabled")
 		}
-		// 管理端模块
-		_ = v1.Group("/admin")
+
+		// 管理端模块：受 JWT + AdminOnly 双中间件保护
+		if adb != nil {
+			if err := adb.Migrate(context.Background()); err != nil {
+				logger.L.Warn("admin migrate failed", zap.Error(err))
+			}
+			la := adminstore.NewLogAggregator(adb.GORM, 1024, 50, 5*time.Second)
+			defer la.Close()
+
+			ah := handler.NewAdminHandler(
+				adminstore.NewUserRepo(adb.GORM),
+				adminstore.NewFileRepo(adb.GORM),
+				adminstore.NewLogQueryRepo(adb.GORM),
+				la,
+			)
+			adminGrp := v1.Group("/admin", middleware.GinJWTAuth(jwtMgr), middleware.GinAdminOnly())
+			{
+				adminGrp.GET("/users", ah.ListUsers)
+				adminGrp.PATCH("/users/:id/status", ah.UpdateUserStatus)
+				adminGrp.PATCH("/users/:id/quota", ah.UpdateUserQuota)
+				adminGrp.GET("/files", ah.ListFiles)
+				adminGrp.GET("/logs", ah.ListLogs)
+			}
+		} else {
+			logger.L.Warn("adminstore unavailable, /admin routes disabled")
+		}
 	}
 }
 
