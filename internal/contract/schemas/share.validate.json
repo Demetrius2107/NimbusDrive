@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nimbusdrive/contract/share.validate.json",
+  "title": "ValidateShareRequest",
+  "description": "POST /api/v1/s/:id/validate 请求体契约。无密码分享允许空 body（由中间件兼容）。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "password": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "访问密码，无密码分享可不传。"
+    }
+  }
+}

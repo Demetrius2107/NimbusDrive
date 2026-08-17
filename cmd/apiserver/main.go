@@ -16,6 +16,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/auth"
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
+	"github.com/Demetrius2107/NimbusDrive/internal/contract"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
@@ -72,7 +73,13 @@ func main() {
 	)
 
 	jwtMgr := auth.New(cfg.JWT.Secret, cfg.JWT.AccessExpMin, cfg.JWT.RefreshExpDay, cfg.JWT.Issuer)
-	registerRoutes(r, st, rc, adb, jwtMgr)
+
+	// 契约注册表：启动期编译所有 JSON Schema，失败即 fatal。
+	reg, err := contract.NewRegistry()
+	if err != nil {
+		logger.L.Fatal("contract registry init failed", zap.Error(err))
+	}
+	registerRoutes(r, st, rc, adb, jwtMgr, reg)
 
 	srv := &http.Server{
 		Addr:         cfg.APIServer.Addr(),
@@ -100,7 +107,7 @@ func main() {
 	logger.L.Info("apiserver stopped")
 }
 
-func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager) {
+func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry) {
 	r.GET("/healthz", healthz(st, rc))
 
 	v1 := r.Group("/api/v1")
@@ -141,7 +148,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 
 			// 分享模块：创建挂在 /files/:id/share，管理挂在 /shares，公开访问挂在 /s
 			sh := handler.NewShareHandler(st.Repos().Shares, st.Repos().Files, rc, st.DB)
-			filesGrp.POST("/:id/share", sh.CreateShare)
+			filesGrp.POST("/:id/share", middleware.GinContract(reg, contract.ShareCreate), sh.CreateShare)
 			sharesGrp := v1.Group("/shares", middleware.GinJWTAuth(jwtMgr))
 			{
 				sharesGrp.GET("", sh.ListShares)
@@ -151,7 +158,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 			pubGrp := v1.Group("/s")
 			{
 				pubGrp.GET("/:id", sh.GetShare)
-				pubGrp.POST("/:id/validate", sh.ValidateShare)
+				pubGrp.POST("/:id/validate", middleware.GinContract(reg, contract.ShareValidate), sh.ValidateShare)
 			}
 		} else {
 			logger.L.Warn("postgres unavailable, /files /trash /shares /s routes disabled")

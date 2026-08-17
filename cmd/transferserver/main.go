@@ -13,6 +13,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/auth"
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
+	"github.com/Demetrius2107/NimbusDrive/internal/contract"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
@@ -61,6 +62,12 @@ func main() {
 
 	jwtMgr := auth.New(cfg.JWT.Secret, cfg.JWT.AccessExpMin, cfg.JWT.RefreshExpDay, cfg.JWT.Issuer)
 
+	// 契约注册表：启动期编译所有 JSON Schema，失败即 fatal。
+	reg, err := contract.NewRegistry()
+	if err != nil {
+		logger.L.Fatal("contract registry init failed", zap.Error(err))
+	}
+
 	h := server.Default(
 		server.WithHostPorts(cfg.Transfer.Addr()),
 		server.WithReadTimeout(time.Duration(cfg.Transfer.ReadTimeout)*time.Second),
@@ -72,7 +79,7 @@ func main() {
 		middleware.HertzRecovery(),
 	)
 
-	registerRoutes(h, st, rc, mc, jwtMgr)
+	registerRoutes(h, st, rc, mc, jwtMgr, reg)
 
 	go func() {
 		h.Spin()
@@ -88,7 +95,7 @@ func main() {
 	logger.L.Info("transferserver stopped")
 }
 
-func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager) {
+func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager, reg *contract.Registry) {
 	h.GET("/healthz", healthz(st, rc, mc))
 
 	v1 := h.Group("/api/v1")
@@ -97,7 +104,7 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	upload := v1.Group("/upload", middleware.HertzJWTAuth(jwtMgr))
 	if st != nil && mc != nil {
 		uh := handler.NewUploadHandler(st.Repos(), mc, st.DB)
-		upload.POST("/check-hash", uh.CheckHash)
+		upload.POST("/check-hash", middleware.HertzContract(reg, contract.UploadCheckHash), uh.CheckHash)
 		upload.PUT("/:sessionId/chunks/:index", uh.UploadChunk)
 		upload.GET("/:sessionId", uh.GetUploadStatus)
 		upload.POST("/:sessionId/complete", uh.CompleteUpload)

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nimbusdrive/contract/upload.check-hash.json",
+  "title": "CheckHashRequest",
+  "description": "POST /api/v1/upload/check-hash 请求体契约。秒传判定 / 创建上传会话。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["hash_sha256", "size", "name"],
+  "properties": {
+    "hash_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "文件内容 SHA-256，小写十六进制 64 位。"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "文件总字节数。"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "文件名，handler 会截断至 255。"
+    },
+    "parent_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "父文件夹 ID，省略表示根目录。"
+    }
+  }
+}
