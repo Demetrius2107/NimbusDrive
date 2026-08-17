@@ -101,3 +101,28 @@ func (r *ShareRepo) ListByUser(ctx context.Context, userID int64, page, size int
 	}
 	return shares, total, nil
 }
+
+// MarkExpired 标记分享已过期（缓存层发现 expires_at < now 时回写）。
+func (r *ShareRepo) MarkExpired(ctx context.Context, id string) error {
+	const q = `UPDATE shares SET status = 'expired' WHERE id = $1 AND status IN ('ready','active')`
+	_, err := r.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("mark share expired: %w", err)
+	}
+	return nil
+}
+
+// GetByFile 按文件 ID 查分享（创建时校验是否已存在活跃分享用）。
+func (r *ShareRepo) GetByFile(ctx context.Context, fileID int64) (*domain.Share, error) {
+	const q = `SELECT id, user_id, file_id, password_hash, expires_at, max_access, access_count, status, created_at, updated_at
+		FROM shares WHERE file_id = $1 AND status IN ('ready','active')
+		ORDER BY created_at DESC LIMIT 1`
+	var s domain.Share
+	if err := r.db.GetContext(ctx, &s, q, fileID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("get share by file: %w", err)
+	}
+	return &s, nil
+}

@@ -24,6 +24,7 @@ export const palette = {
   gradientSider: 'linear-gradient(180deg, #1e1b4b 0%, #312e81 100%)',
   gradientLogo: 'linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%)',
   gradientLoginBg: 'linear-gradient(135deg, #1e1b4b 0%, #3b82f6 50%, #8b5cf6 100%)',
+  gradientPage: 'linear-gradient(135deg, #f0f4ff 0%, #ede9fe 100%)',
 
   // 文本
   textOnDark: '#e0e7ff',

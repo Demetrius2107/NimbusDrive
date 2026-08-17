@@ -121,7 +121,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 		// 用户模块
 		_ = v1.Group("/users")
 
-		// 文件管理模块 + 回收站：受 JWT 鉴权保护。
+		// 文件管理模块 + 回收站 + 分享创建：受 JWT 鉴权保护。
 		if st != nil {
 			fh := handler.NewFileHandler(st.Repos().Files, st.Repos().Hashes, st.DB)
 			filesGrp := v1.Group("/files", middleware.GinJWTAuth(jwtMgr))
@@ -138,12 +138,24 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 				trashGrp.POST("/:id/restore", fh.Restore)
 				trashGrp.DELETE("/:id", fh.PermanentDelete)
 			}
-		} else {
-			logger.L.Warn("postgres unavailable, /files and /trash routes disabled")
-		}
 
-		// 分享模块
-		_ = v1.Group("/shares")
+			// 分享模块：创建挂在 /files/:id/share，管理挂在 /shares，公开访问挂在 /s
+			sh := handler.NewShareHandler(st.Repos().Shares, st.Repos().Files, rc, st.DB)
+			filesGrp.POST("/:id/share", sh.CreateShare)
+			sharesGrp := v1.Group("/shares", middleware.GinJWTAuth(jwtMgr))
+			{
+				sharesGrp.GET("", sh.ListShares)
+				sharesGrp.DELETE("/:id", sh.CancelShare)
+			}
+			// 公开访问（无 JWT）
+			pubGrp := v1.Group("/s")
+			{
+				pubGrp.GET("/:id", sh.GetShare)
+				pubGrp.POST("/:id/validate", sh.ValidateShare)
+			}
+		} else {
+			logger.L.Warn("postgres unavailable, /files /trash /shares /s routes disabled")
+		}
 		// 管理端模块
 		_ = v1.Group("/admin")
 	}
