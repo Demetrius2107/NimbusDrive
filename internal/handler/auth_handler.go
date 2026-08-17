@@ -6,24 +6,28 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Demetrius2107/NimbusDrive/internal/auth"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
+	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // AuthHandler 处理鉴权相关接口。
 type AuthHandler struct {
-	users *store.UserRepo
-	jwt   *auth.JWTManager
+	users   *store.UserRepo
+	jwt     *auth.JWTManager
+	emitter *eventbus.Emitter // 可为 nil
 }
 
 // NewAuthHandler 构造 AuthHandler。
-func NewAuthHandler(users *store.UserRepo, jwt *auth.JWTManager) *AuthHandler {
-	return &AuthHandler{users: users, jwt: jwt}
+func NewAuthHandler(users *store.UserRepo, jwt *auth.JWTManager, emitter *eventbus.Emitter) *AuthHandler {
+	return &AuthHandler{users: users, jwt: jwt, emitter: emitter}
 }
 
 // RegisterRequest 注册请求体。
@@ -55,6 +59,20 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		}
 		abortInternal(c, "创建用户失败")
 		return
+	}
+	// 发射 user.registered 事件
+	if h.emitter != nil {
+		h.emitter.Emit(&domain.Event{
+			ID:         uuid.NewString(),
+			Type:       domain.EventUserRegistered,
+			OccurredAt: time.Now().UTC(),
+			ActorID:    user.ID,
+			Payload: map[string]any{
+				"user_id":  user.ID,
+				"username": user.Username,
+				"email":    user.Email,
+			},
+		})
 	}
 	c.JSON(http.StatusCreated, gin.H{
 		"code":    string(domain.CodeOK),

@@ -9,14 +9,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
+	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/utils"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/minio/minio-go/v7"
 )
@@ -29,15 +32,17 @@ const (
 
 // UploadHandler 处理 TransferServer 的上传相关接口。
 type UploadHandler struct {
-	repos *store.Repositories
-	mc    *storage.MinIO
-	db    *sqlx.DB
+	repos   *store.Repositories
+	mc      *storage.MinIO
+	db      *sqlx.DB
+	emitter *eventbus.Emitter // 可为 nil（Redis 不可用时降级）
 }
 
 // NewUploadHandler 构造 UploadHandler。
 // db 用于 complete 时的跨表事务（file_hashes + files + users）。
-func NewUploadHandler(repos *store.Repositories, mc *storage.MinIO, db *sqlx.DB) *UploadHandler {
-	return &UploadHandler{repos: repos, mc: mc, db: db}
+// emitter 用于上传完成后发射 file.uploaded 事件，可为 nil。
+func NewUploadHandler(repos *store.Repositories, mc *storage.MinIO, db *sqlx.DB, emitter *eventbus.Emitter) *UploadHandler {
+	return &UploadHandler{repos: repos, mc: mc, db: db, emitter: emitter}
 }
 
 // CheckHashRequest 秒传判定 / 创建上传会话请求体。
@@ -78,6 +83,12 @@ func (h *UploadHandler) CheckHash(ctx context.Context, c *app.RequestContext) {
 			hertzInternal(c, "秒传失败")
 			return
 		}
+		// 秒传完成：发射 file.uploaded 事件（instant=true）
+		var parentID any
+		if req.ParentID != nil {
+			parentID = *req.ParentID
+		}
+		h.emitFileUploaded(ctx, fileID, userID, req.HashSHA256, req.Size, existing.StoragePath, req.Name, parentID, true)
 		c.JSON(consts.StatusOK, utils.H{
 			"code":    string(domain.CodeOK),
 			"message": "ok",
@@ -334,6 +345,16 @@ func (h *UploadHandler) CompleteUpload(ctx context.Context, c *app.RequestContex
 	// 标记会话完成（元数据已落库，会话状态不一致不致命）。
 	_ = h.repos.Uploads.Complete(ctx, sessionID)
 
+	// 事务提交后查 files 表补全 name/parent_id，发射 file.uploaded 事件。
+	var parentID any
+	if file, ferr := h.repos.Files.GetByID(ctx, session.FileID); ferr == nil {
+		parentID = file.ParentID
+		h.emitFileUploaded(ctx, session.FileID, session.UserID, session.HashSHA256, session.TotalSize, objectKey, file.Name, parentID, false)
+	} else {
+		// 查询失败仍发事件，载荷缺 name/parent_id（消费者容忍缺字段）
+		h.emitFileUploaded(ctx, session.FileID, session.UserID, session.HashSHA256, session.TotalSize, objectKey, "", parentID, false)
+	}
+
 	c.JSON(consts.StatusOK, utils.H{
 		"code":    string(domain.CodeOK),
 		"message": "ok",
@@ -510,6 +531,32 @@ func hertzBadRequest(c *app.RequestContext, msg string) {
 
 func hertzNotFound(c *app.RequestContext, msg string) {
 	c.JSON(consts.StatusNotFound, utils.H{"code": string(domain.CodeNotFound), "message": msg})
+}
+
+// emitFileUploaded 发射 file.uploaded 事件。emitter 为 nil 或 channel 满时静默降级。
+// parentID 传 *int64 或 nil；instant 区分秒传与分块合并。
+func (h *UploadHandler) emitFileUploaded(ctx context.Context, fileID, userID int64, hash string, size int64, storagePath, name string, parentID any, instant bool) {
+	if h.emitter == nil {
+		return
+	}
+	payload := map[string]any{
+		"file_id":      fileID,
+		"hash_sha256":  hash,
+		"size":         size,
+		"storage_path": storagePath,
+		"name":         name,
+		"instant":      instant,
+	}
+	if parentID != nil {
+		payload["parent_id"] = parentID
+	}
+	h.emitter.Emit(&domain.Event{
+		ID:         uuid.NewString(),
+		Type:       domain.EventFileUploaded,
+		OccurredAt: time.Now().UTC(),
+		ActorID:    userID,
+		Payload:    payload,
+	})
 }
 
 func hertzForbidden(c *app.RequestContext, msg string) {
