@@ -1,17 +1,18 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Card, Upload, Button, Table, Progress, App, Space, Breadcrumb, Input, Dropdown, Spin, Select,
+  Card, Upload, Button, Table, Progress, App, Space, Breadcrumb, Input, Dropdown, Spin, Select, DatePicker,
 } from 'antd'
 import type { MenuProps } from 'antd'
 import {
   UploadOutlined, FolderOutlined, FileOutlined, DownloadOutlined, FolderOpenOutlined,
-  DeleteOutlined, EditOutlined, FolderAddOutlined, MoreOutlined, HomeOutlined,
+  DeleteOutlined, EditOutlined, FolderAddOutlined, MoreOutlined, HomeOutlined, ShareAltOutlined,
 } from '@ant-design/icons'
 import { uploadFile, type UploadProgress } from '../lib/uploader'
 import { downloadFile, extractDownloadError } from '../lib/downloader'
 import {
   listFiles, createFolder, moveFile, renameFile, deleteFile, type FileNode,
 } from '../lib/files'
+import { createShare } from '../lib/shares'
 import { palette } from '../theme'
 
 // 上传中的临时行（本地 state，与后端文件列表分离）。
@@ -238,6 +239,63 @@ export function FilesPage() {
     })
   }
 
+  // 发起分享：弹窗填密码/过期/次数，调 createShare。
+  const handleShare = (file: FileNode) => {
+    let password = ''
+    let expireTime: string | undefined
+    let maxAccess: number | undefined
+    modal.confirm({
+      title: `分享「${file.name}」`,
+      content: (
+        <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
+          <Input.Password
+            placeholder="提取密码（留空则无密码）"
+            onChange={(e) => { password = e.target.value }}
+          />
+          <DatePicker
+            showTime
+            placeholder="过期时间（留空则永久）"
+            style={{ width: '100%' }}
+            onChange={(_, dateStr) => {
+              if (typeof dateStr === 'string' && dateStr) {
+                expireTime = new Date(dateStr).toISOString()
+              }
+            }}
+          />
+          <Input
+            type="number"
+            placeholder="访问次数上限（留空则不限）"
+            onChange={(e) => {
+              const v = e.target.value.trim()
+              maxAccess = v ? Number(v) : undefined
+            }}
+          />
+        </Space>
+      ),
+      okText: '创建分享',
+      onOk: async () => {
+        try {
+          const share = await createShare(file.id, {
+            password: password || undefined,
+            expire_time: expireTime,
+            max_access_count: maxAccess,
+          })
+          const link = `${window.location.origin}/s/${share.id}`
+          modal.info({
+            title: '分享已创建',
+            content: (
+              <Input value={link} readOnly onFocus={(e) => e.target.select()} />
+            ),
+          })
+        } catch (e) {
+          const err = e as Error
+          message.error(`创建分享失败：${err.message}`)
+          return Promise.reject(e)
+        }
+      },
+    })
+  }
+
   // 文件操作菜单
   const getFileActions = (file: FileNode): MenuProps['items'] => {
     const items: MenuProps['items'] = []
@@ -248,6 +306,12 @@ export function FilesPage() {
         icon: <DownloadOutlined />,
         disabled: downloading.has(file.id),
         onClick: () => handleDownload(file),
+      })
+      items.push({
+        key: 'share',
+        label: '分享',
+        icon: <ShareAltOutlined />,
+        onClick: () => handleShare(file),
       })
     } else {
       items.push({
