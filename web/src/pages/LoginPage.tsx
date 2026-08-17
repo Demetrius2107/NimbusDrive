@@ -2,7 +2,14 @@ import { Card, Form, Input, Button, Typography, App } from 'antd'
 import { ThunderboltOutlined, UserOutlined, LockOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
+import { http } from '../lib/api'
 import { palette } from '../theme'
+
+interface LoginResponse {
+  token: string
+  username: string
+  is_admin: boolean
+}
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -10,11 +17,19 @@ export function LoginPage() {
   const { message } = App.useApp()
 
   const onFinish = async (values: { username: string; password: string }) => {
-    // TODO: POST /auth/login → { token, username }
-    // 骨架阶段直接写入本地态跳转。
-    setAuth('skeleton-token', values.username)
-    message.success('登录成功（骨架态）')
-    navigate('/files', { replace: true })
+    try {
+      const resp = await http.post<{ code: string; message: string; data: LoginResponse }>(
+        '/auth/login',
+        values,
+      )
+      const { token, username, is_admin } = resp.data.data
+      setAuth(token, username, is_admin)
+      message.success('登录成功')
+      navigate('/files', { replace: true })
+    } catch (e) {
+      const err = e as Error
+      message.error(`登录失败：${err.message}`)
+    }
   }
 
   return (

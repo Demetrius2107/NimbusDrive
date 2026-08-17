@@ -1,6 +1,6 @@
 import { Layout, Menu, Button, Avatar, Progress } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { FileOutlined, ShareAltOutlined, DashboardOutlined, ThunderboltOutlined, LogoutOutlined, DeleteOutlined } from '@ant-design/icons'
+import { FileOutlined, ShareAltOutlined, DashboardOutlined, ThunderboltOutlined, LogoutOutlined, DeleteOutlined, AuditOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../stores/auth'
 import { palette } from '../theme'
 
@@ -9,13 +9,14 @@ const { Header, Sider, Content } = Layout
 export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { username, logout } = useAuthStore()
+  const { username, logout, isAdmin } = useAuthStore()
 
   const items = [
     { key: '/files', icon: <FileOutlined />, label: '文件' },
     { key: '/trash', icon: <DeleteOutlined />, label: '回收站' },
     { key: '/shares', icon: <ShareAltOutlined />, label: '分享' },
     { key: '/quota', icon: <DashboardOutlined />, label: '配额' },
+    ...(isAdmin ? [{ key: '/admin', icon: <AuditOutlined />, label: '管理后台' }] : []),
   ]
 
   const handleLogout = () => {
