@@ -14,6 +14,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
 	"github.com/Demetrius2107/NimbusDrive/internal/contract"
+	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
@@ -68,6 +69,16 @@ func main() {
 		logger.L.Fatal("contract registry init failed", zap.Error(err))
 	}
 
+	// 事件总线 Emitter：TransferServer 只生产事件，不消费。
+	// Redis 不可用时降级为 no-op。关闭顺序（LIFO）：emitter → rc.Close（已 defer）。
+	var emitter *eventbus.Emitter
+	if rc != nil {
+		emitter = eventbus.NewEmitter(rc.Client, cfg.EventBus.StreamPrefix, cfg.EventBus.BufferSize, cfg.EventBus.StreamMaxLen)
+		defer emitter.Close()
+	} else {
+		logger.L.Warn("event bus disabled: redis unavailable")
+	}
+
 	h := server.Default(
 		server.WithHostPorts(cfg.Transfer.Addr()),
 		server.WithReadTimeout(time.Duration(cfg.Transfer.ReadTimeout)*time.Second),
@@ -79,7 +90,7 @@ func main() {
 		middleware.HertzRecovery(),
 	)
 
-	registerRoutes(h, st, rc, mc, jwtMgr, reg)
+	registerRoutes(h, st, rc, mc, jwtMgr, reg, emitter)
 
 	go func() {
 		h.Spin()
@@ -95,7 +106,7 @@ func main() {
 	logger.L.Info("transferserver stopped")
 }
 
-func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager, reg *contract.Registry) {
+func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter) {
 	h.GET("/healthz", healthz(st, rc, mc))
 
 	v1 := h.Group("/api/v1")
@@ -103,7 +114,7 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	// 上传模块：受 JWT 鉴权保护。
 	upload := v1.Group("/upload", middleware.HertzJWTAuth(jwtMgr))
 	if st != nil && mc != nil {
-		uh := handler.NewUploadHandler(st.Repos(), mc, st.DB)
+		uh := handler.NewUploadHandler(st.Repos(), mc, st.DB, emitter)
 		upload.POST("/check-hash", middleware.HertzContract(reg, contract.UploadCheckHash), uh.CheckHash)
 		upload.PUT("/:sessionId/chunks/:index", uh.UploadChunk)
 		upload.GET("/:sessionId", uh.GetUploadStatus)

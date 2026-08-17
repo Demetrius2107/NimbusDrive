@@ -16,9 +16,11 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
+	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -28,15 +30,16 @@ const shareCacheDefaultTTL = 7 * 24 * time.Hour
 
 // ShareHandler 处理分享模块接口。
 type ShareHandler struct {
-	shares *store.ShareRepo
-	files  *store.FileRepo
-	cache  *cache.Redis
-	db     *sqlx.DB
+	shares  *store.ShareRepo
+	files   *store.FileRepo
+	cache   *cache.Redis
+	db      *sqlx.DB
+	emitter *eventbus.Emitter // 可为 nil
 }
 
 // NewShareHandler 构造 ShareHandler。
-func NewShareHandler(shares *store.ShareRepo, files *store.FileRepo, cache *cache.Redis, db *sqlx.DB) *ShareHandler {
-	return &ShareHandler{shares: shares, files: files, cache: cache, db: db}
+func NewShareHandler(shares *store.ShareRepo, files *store.FileRepo, cache *cache.Redis, db *sqlx.DB, emitter *eventbus.Emitter) *ShareHandler {
+	return &ShareHandler{shares: shares, files: files, cache: cache, db: db, emitter: emitter}
 }
 
 // --- 鉴权接口（JWT）---
@@ -137,6 +140,9 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 
 	// write-through 写缓存
 	h.cacheShare(c.Request.Context(), share)
+
+	// 发射 share.created 事件
+	h.emitShareCreated(share)
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":    string(domain.CodeOK),
@@ -272,6 +278,9 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 	// 同步缓存计数（失败不阻塞）
 	_ = h.cache.IncrShareAccess(c.Request.Context(), shareID)
 
+	// 发射 share.accessed 事件（公开端点，无登录用户，记录访问者 IP）
+	h.emitShareAccessed(shareID, share.FileID, c.ClientIP())
+
 	// 计算剩余次数与过期秒数
 	var remaining *int
 	if share.MaxAccess != nil {
@@ -304,6 +313,46 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 }
 
 // --- 辅助 ---
+
+// emitShareCreated 发射 share.created 事件。emitter 为 nil 时静默降级。
+func (h *ShareHandler) emitShareCreated(share *domain.Share) {
+	if h.emitter == nil {
+		return
+	}
+	payload := map[string]any{
+		"share_id":     share.ID,
+		"file_id":      share.FileID,
+		"has_password": share.PasswordHash != nil,
+	}
+	if share.ExpiresAt != nil {
+		payload["expires_at"] = *share.ExpiresAt
+	}
+	h.emitter.Emit(&domain.Event{
+		ID:         uuid.NewString(),
+		Type:       domain.EventShareCreated,
+		OccurredAt: time.Now().UTC(),
+		ActorID:    share.UserID,
+		Payload:    payload,
+	})
+}
+
+// emitShareAccessed 发射 share.accessed 事件。公开端点无登录用户，ActorID=0。
+func (h *ShareHandler) emitShareAccessed(shareID string, fileID int64, accessorIP string) {
+	if h.emitter == nil {
+		return
+	}
+	h.emitter.Emit(&domain.Event{
+		ID:         uuid.NewString(),
+		Type:       domain.EventShareAccessed,
+		OccurredAt: time.Now().UTC(),
+		ActorID:    0,
+		Payload: map[string]any{
+			"share_id":    shareID,
+			"file_id":     fileID,
+			"accessor_ip": accessorIP,
+		},
+	})
+}
 
 // fetchShare 取分享：先查 Redis，miss 回源 PG 并回填缓存。
 // 发现过期时标记 expired 并清缓存，返回 domain.ErrNotFound。
