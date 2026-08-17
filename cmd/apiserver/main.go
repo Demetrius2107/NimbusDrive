@@ -120,8 +120,28 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 
 		// 用户模块
 		_ = v1.Group("/users")
-		// 文件元数据模块
-		_ = v1.Group("/files")
+
+		// 文件管理模块 + 回收站：受 JWT 鉴权保护。
+		if st != nil {
+			fh := handler.NewFileHandler(st.Repos().Files, st.Repos().Hashes, st.DB)
+			filesGrp := v1.Group("/files", middleware.GinJWTAuth(jwtMgr))
+			{
+				filesGrp.GET("", fh.List)
+				filesGrp.POST("/folder", fh.CreateFolder)
+				filesGrp.POST("/:id/move", fh.Move)
+				filesGrp.POST("/:id/rename", fh.Rename)
+				filesGrp.DELETE("/:id", fh.SoftDelete)
+			}
+			trashGrp := v1.Group("/trash", middleware.GinJWTAuth(jwtMgr))
+			{
+				trashGrp.GET("", fh.ListTrash)
+				trashGrp.POST("/:id/restore", fh.Restore)
+				trashGrp.DELETE("/:id", fh.PermanentDelete)
+			}
+		} else {
+			logger.L.Warn("postgres unavailable, /files and /trash routes disabled")
+		}
+
 		// 分享模块
 		_ = v1.Group("/shares")
 		// 管理端模块
