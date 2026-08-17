@@ -163,6 +163,10 @@ func abortConflict(c *gin.Context, msg string) {
 	c.AbortWithStatusJSON(http.StatusConflict, gin.H{"code": string(domain.CodeConflict), "message": msg})
 }
 
+func abortNotFound(c *gin.Context, msg string) {
+	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"code": string(domain.CodeNotFound), "message": msg})
+}
+
 func abortInternal(c *gin.Context, msg string) {
 	c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"code": string(domain.CodeInternal), "message": msg})
 }
