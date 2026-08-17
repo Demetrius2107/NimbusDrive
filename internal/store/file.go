@@ -216,3 +216,94 @@ func (r *FileRepo) Subtree(ctx context.Context, folderID int64) ([]domain.FileNo
 	}
 	return nodes, nil
 }
+
+// ListTrash 列出某用户回收站中的节点（deleted_at IS NOT NULL），分页。
+// 按 deleted_at DESC 排序（最近删除的在前）。
+func (r *FileRepo) ListTrash(ctx context.Context, userID int64, page, size int) ([]domain.FileNode, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 200 {
+		size = 50
+	}
+	offset := (page - 1) * size
+
+	q := fmt.Sprintf(`
+		SELECT %s FROM files
+		WHERE user_id = $1 AND deleted_at IS NOT NULL
+		ORDER BY deleted_at DESC
+		LIMIT $2 OFFSET $3`, fileCols)
+
+	var nodes []domain.FileNode
+	if err := r.db.SelectContext(ctx, &nodes, q, userID, size, offset); err != nil {
+		return nil, 0, fmt.Errorf("list trash: %w", err)
+	}
+
+	const countQ = `SELECT count(*) FROM files WHERE user_id = $1 AND deleted_at IS NOT NULL`
+	var total int
+	if err := r.db.GetContext(ctx, &total, countQ, userID); err != nil {
+		return nil, 0, fmt.Errorf("count trash: %w", err)
+	}
+	return nodes, total, nil
+}
+
+// SoftDeleteRecursive 递归软删除：将节点及其所有后代标记为已删除（移入回收站）。
+// 用递归 CTE 一次性找出子树所有 ID，批量 UPDATE，避免多次往返。
+func (r *FileRepo) SoftDeleteRecursive(ctx context.Context, id int64) error {
+	const q = `
+		WITH RECURSIVE subtree AS (
+			SELECT id FROM files WHERE id = $1 AND deleted_at IS NULL
+			UNION ALL
+			SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id WHERE f.deleted_at IS NULL
+		)
+		UPDATE files SET deleted_at = now()
+		WHERE id IN (SELECT id FROM subtree) AND deleted_at IS NULL`
+	res, err := r.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("soft delete recursive: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// HardDeleteRecursive 递归物理删除：删除节点及其所有后代（含已软删除的子节点）。
+// 彻底删除文件夹时用。注意：调用方需在此之后对每个文件节点做 ref_count--。
+func (r *FileRepo) HardDeleteRecursive(ctx context.Context, id int64) error {
+	const q = `
+		WITH RECURSIVE subtree AS (
+			SELECT id FROM files WHERE id = $1
+			UNION ALL
+			SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+		)
+		DELETE FROM files WHERE id IN (SELECT id FROM subtree)`
+	res, err := r.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("hard delete recursive: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// ListDescendants 列出某节点的所有后代（含已软删除的），用于彻底删除时收集 hash 做 ref_count--。
+// 返回所有 is_folder=false 且 hash_sha256 IS NOT NULL 的后代文件。
+func (r *FileRepo) ListDescendants(ctx context.Context, id int64) ([]domain.FileNode, error) {
+	q := fmt.Sprintf(`
+		WITH RECURSIVE subtree AS (
+			SELECT %s FROM files WHERE id = $1
+			UNION ALL
+			SELECT f.%s FROM files f JOIN subtree s ON f.parent_id = s.id
+		)
+		SELECT %s FROM subtree
+		WHERE is_folder = false AND hash_sha256 IS NOT NULL`, fileCols, fileCols, fileCols)
+	var nodes []domain.FileNode
+	if err := r.db.SelectContext(ctx, &nodes, q, id); err != nil {
+		return nil, fmt.Errorf("list descendants: %w", err)
+	}
+	return nodes, nil
+}
