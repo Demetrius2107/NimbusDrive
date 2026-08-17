@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nimbusdrive/contract/share.create.json",
+  "title": "CreateShareRequest",
+  "description": "POST /api/v1/files/:id/share 请求体契约。语义校验（文件归属/未来时间）由 handler 负责。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "password": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "可选访问密码，空串等同不设密码。"
+    },
+    "expire_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339/ISO8601 过期时间，空串或省略表示永不过期。"
+    },
+    "max_access_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "最大访问次数，省略表示不限次。"
+    }
+  }
+}
