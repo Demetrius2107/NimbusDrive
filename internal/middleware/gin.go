@@ -25,12 +25,12 @@ func GinRequestID() gin.HandlerFunc {
 	}
 }
 
-// GinLogger 结构化访问日志。
+// GinLogger 结构化访问日志。用 FromContext 注入 trace_id/span_id。
 func GinLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		logger.L.Info("http",
+		logger.FromContext(c.Request.Context()).Info("http",
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
 			zap.Int("status", c.Writer.Status()),
@@ -47,7 +47,7 @@ func GinRecovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				logger.L.Error("panic recovered",
+				logger.FromContext(c.Request.Context()).Error("panic recovered",
 					zap.Any("error", r),
 					zap.String("request_id", c.GetString("request_id")),
 					zap.Stack("stack"),

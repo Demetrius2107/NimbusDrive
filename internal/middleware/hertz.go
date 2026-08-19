@@ -28,13 +28,13 @@ func HertzRequestID() app.HandlerFunc {
 	}
 }
 
-// HertzLogger 结构化访问日志。
+// HertzLogger 结构化访问日志。用 FromContext 注入 trace_id/span_id。
 func HertzLogger() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		start := time.Now()
 		c.Next(ctx)
 		rid, _ := c.Get("request_id")
-		logger.L.Info("http",
+		logger.FromContext(ctx).Info("http",
 			zap.String("method", string(c.Request.Method())),
 			zap.String("path", string(c.Request.URI().Path())),
 			zap.Int("status", c.Response.StatusCode()),
@@ -50,7 +50,7 @@ func HertzLogger() app.HandlerFunc {
 func HertzRecovery() app.HandlerFunc {
 	return recovery.Recovery(recovery.WithRecoveryHandler(func(ctx context.Context, c *app.RequestContext, err interface{}, stack []byte) {
 		rid, _ := c.Get("request_id")
-		logger.L.Error("panic recovered",
+		logger.FromContext(ctx).Error("panic recovered",
 			zap.Any("error", err),
 			zap.Any("request_id", rid),
 			zap.ByteString("stack", stack),
