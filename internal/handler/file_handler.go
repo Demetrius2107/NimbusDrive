@@ -380,7 +380,7 @@ func (h *FileHandler) PermanentDelete(c *gin.Context) {
 	// 对每个物理文件的 hash 做 ref_count--（非阻塞，失败只记录不影响主流程）。
 	for _, desc := range descendants {
 		if desc.HashSHA256 != nil && *desc.HashSHA256 != "" {
-			_ = h.hashes.DecrRef(c.Request.Context(), *desc.HashSHA256)
+			_ = h.hashes.DecrRef(c.Request.Context(), h.db, *desc.HashSHA256)
 		}
 	}
 

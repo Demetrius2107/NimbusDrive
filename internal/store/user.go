@@ -64,12 +64,13 @@ func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*domain.
 // delta > 0 表示增加已用（上传完成扣减），delta < 0 表示减少（删除回补）。
 // 条件：used_storage + delta <= storage_quota；不满足返回 domain.ErrQuotaExceeded。
 // 设计文档第九章并发策略：原子条件更新，affected=0 即超限。
-func (r *UserRepo) IncrUsedStorage(ctx context.Context, userID, delta int64) error {
+// ext 接受 *sqlx.DB 或 *sqlx.Tx，使调用方可在事务内复用此方法（executor 接口模式）。
+func (r *UserRepo) IncrUsedStorage(ctx context.Context, ext sqlx.ExtContext, userID, delta int64) error {
 	const q = `
 		UPDATE users
 		SET used_storage = used_storage + $2
 		WHERE id = $1 AND used_storage + $2 <= storage_quota AND used_storage + $2 >= 0`
-	res, err := r.db.ExecContext(ctx, q, userID, delta)
+	res, err := ext.ExecContext(ctx, q, userID, delta)
 	if err != nil {
 		return fmt.Errorf("incr used_storage: %w", err)
 	}

@@ -86,13 +86,15 @@ func (r *FileRepo) ListByParent(ctx context.Context, userID int64, parentID *int
 	return nodes, total, nil
 }
 
-// MarkCompleted 上传完成回写：状态置 completed，记录哈希、存储路径、分块数。
-func (r *FileRepo) MarkCompleted(ctx context.Context, id int64, hash, storagePath string, chunkCount int) error {
+// MarkCompleted 上传完成回写：状态置 completed，记录哈希、存储路径、分块数、实际大小。
+// size 单独传入：上传完成前 files.size 为 0 占位，合并后写入真实字节数。
+// ext 接受 *sqlx.DB 或 *sqlx.Tx，使调用方可在事务内复用此方法（executor 接口模式）。
+func (r *FileRepo) MarkCompleted(ctx context.Context, ext sqlx.ExtContext, id int64, hash, storagePath string, chunkCount int, size int64) error {
 	const q = `
 		UPDATE files
-		SET status = 'completed', hash_sha256 = $2, storage_path = $3, chunk_count = $4, size = files.size
+		SET status = 'completed', hash_sha256 = $2, storage_path = $3, chunk_count = $4, size = $5
 		WHERE id = $1`
-	res, err := r.db.ExecContext(ctx, q, id, hash, storagePath, chunkCount)
+	res, err := ext.ExecContext(ctx, q, id, hash, storagePath, chunkCount, size)
 	if err != nil {
 		return fmt.Errorf("mark file completed: %w", err)
 	}
