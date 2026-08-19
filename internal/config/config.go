@@ -20,6 +20,7 @@ type Config struct {
 	JWT            JWTConfig            `mapstructure:"jwt"`
 	EventBus       EventBusConfig       `mapstructure:"event_bus"`
 	Observability  ObservabilityConfig  `mapstructure:"observability"`
+	Cron           CronConfig           `mapstructure:"cron"`
 }
 
 type AppConfig struct {
@@ -120,6 +121,33 @@ type ObservabilityConfig struct {
 	MetricsPath string `mapstructure:"metrics_path"`
 }
 
+// CronConfig 描述后台清理/relay 定时任务参数。crons 全部跑在 APIServer（控制面）。
+// 每个任务独立 interval + batch_size，避免单事务扫全表持锁过久。
+type CronConfig struct {
+	// 回收站 30 天物理清理：deleted_at < now()-retention 的节点物理删除 + ref_count-- + 配额回补。
+	TrashPurge struct {
+		IntervalSec    int `mapstructure:"interval_sec"`    // 默认 6h
+		RetentionDays  int `mapstructure:"retention_days"`  // 默认 30
+		BatchSize      int `mapstructure:"batch_size"`      // 默认 100
+	} `mapstructure:"trash_purge"`
+	// 零引用哈希 GC：ref_count=0 且 zero_ref_at < now()-grace 的物理对象回收。
+	HashGC struct {
+		IntervalSec int `mapstructure:"interval_sec"`    // 默认 6h
+		GraceHours  int `mapstructure:"grace_hours"`     // 默认 24，grace 窗口防并发 re-reference 误删
+		BatchSize   int `mapstructure:"batch_size"`      // 默认 50
+	} `mapstructure:"hash_gc"`
+	// 上传会话过期清理：active 且 expires_at < now 的会话标 expired + 清理 init 占位文件 + AbortMultipart。
+	SessionExpiry struct {
+		IntervalSec int `mapstructure:"interval_sec"` // 默认 1h
+		BatchSize   int `mapstructure:"batch_size"`   // 默认 200
+	} `mapstructure:"session_expiry"`
+	// outbox relay：published_at IS NULL 的事件 XAdd 后回写。高频小批。
+	Outbox struct {
+		IntervalSec int `mapstructure:"interval_sec"` // 默认 2
+		BatchSize   int `mapstructure:"batch_size"`   // 默认 100
+	} `mapstructure:"outbox"`
+}
+
 // Load 从 configs/ 目录读取指定名称的 yaml，并叠加同名环境变量覆盖。
 // name 不含扩展名，如 "config.dev"。
 func Load(name string) (*Config, error) {
@@ -154,6 +182,18 @@ func Load(name string) (*Config, error) {
 	// 指标默认启用 + /metrics 路径
 	v.SetDefault("observability.metrics_enabled", true)
 	v.SetDefault("observability.metrics_path", "/metrics")
+
+	// cron 默认值：保守间隔 + 受控批次，避免单事务持锁过久。
+	v.SetDefault("cron.trash_purge.interval_sec", 6*3600)
+	v.SetDefault("cron.trash_purge.retention_days", 30)
+	v.SetDefault("cron.trash_purge.batch_size", 100)
+	v.SetDefault("cron.hash_gc.interval_sec", 6*3600)
+	v.SetDefault("cron.hash_gc.grace_hours", 24)
+	v.SetDefault("cron.hash_gc.batch_size", 50)
+	v.SetDefault("cron.session_expiry.interval_sec", 3600)
+	v.SetDefault("cron.session_expiry.batch_size", 200)
+	v.SetDefault("cron.outbox.interval_sec", 2)
+	v.SetDefault("cron.outbox.batch_size", 100)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", name, err)

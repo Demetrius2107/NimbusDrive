@@ -75,3 +75,26 @@ observability:
   # Prometheus 指标 + /metrics 端点。抓取端走 Grafana 栈（见 deploy/observability/）。
   metrics_enabled: true
   metrics_path: /metrics
+
+# 后台清理/relay 定时任务（全部跑在 APIServer 控制面）。
+# 每个任务独立 interval + batch_size，避免单事务扫全表持锁过久。
+cron:
+  # 回收站 30 天物理清理：deleted_at < now()-retention 的节点物理删除 + ref_count-- + 配额回补。
+  trash_purge:
+    interval_sec: 21600   # 6h
+    retention_days: 30
+    batch_size: 100
+  # 零引用哈希 GC：ref_count=0 且 zero_ref_at < now()-grace 的物理对象回收。
+  # grace 窗口防并发 re-reference 误删（tombstone + grace 的竞态防护）。
+  hash_gc:
+    interval_sec: 21600   # 6h
+    grace_hours: 24
+    batch_size: 50
+  # 上传会话过期清理：active 且 expires_at < now 的会话标 expired + 清理 init 占位文件 + AbortMultipart。
+  session_expiry:
+    interval_sec: 3600    # 1h
+    batch_size: 200
+  # outbox relay：published_at IS NULL 的事件 XAdd 后回写。高频小批，保证事件最终投递。
+  outbox:
+    interval_sec: 2
+    batch_size: 100
