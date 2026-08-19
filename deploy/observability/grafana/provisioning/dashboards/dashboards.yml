@@ -1,0 +1,13 @@
+# Grafana dashboard 自动 provision。
+# 从 /var/lib/grafana/dashboards/ 加载所有 JSON。
+apiVersion: 1
+
+providers:
+  - name: NimbusDrive
+    orgId: 1
+    folder: NimbusDrive
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

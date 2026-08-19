@@ -1,0 +1,151 @@
+{
+  "title": "NimbusDrive RED 概览",
+  "uid": "nimbus-red-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["nimbusdrive", "red"],
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "QPS (by service)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(nimbus_http_requests_total[1m])) by (service)",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error Rate (5xx)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(nimbus_http_requests_total{status_class=\"5xx\"}[5m])) by (service)",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "P99 Latency (by route)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(nimbus_http_request_duration_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Uploads Completed (by type)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "rate(nimbus_uploads_completed_total[5m])",
+          "legendFormat": "{{type}} / {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Upload Throughput (bytes/s)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [
+        {
+          "expr": "sum(rate(nimbus_upload_bytes_total[5m]))",
+          "legendFormat": "total"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Active Upload Sessions",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "nimbus_upload_active_sessions",
+          "legendFormat": "active"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Event Bus Consumer Lag (pending messages)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "eventbus_consumer_pending_messages",
+          "legendFormat": "{{stream}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Event Bus Dropped/Emitted",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "rate(eventbus_emitter_emitted_total[5m])",
+          "legendFormat": "emitted"
+        },
+        {
+          "expr": "rate(eventbus_emitter_dropped_total[5m])",
+          "legendFormat": "dropped"
+        },
+        {
+          "expr": "rate(eventbus_consumer_dlq_total[5m])",
+          "legendFormat": "dlq"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "SSE Active Connections",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "nimbus_sse_active_connections",
+          "legendFormat": "connections"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Login Attempts (by result)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 6, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "rate(nimbus_login_attempts_total[5m])",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    }
+  ]
+}

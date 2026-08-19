@@ -1,0 +1,32 @@
+# Tempo 最小可用配置（单节点，开发环境）。
+# 接收 OTLP gRPC(:4317) / HTTP(:4318)，与 feat/observability-tracing 的
+# otlp exporter 对接——切 config: observability.exporter=otlp 即把 trace 送进来。
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
