@@ -11,6 +11,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/auth"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
@@ -54,12 +55,15 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	user, err := h.users.Create(c.Request.Context(), req.Username, req.Email, string(hash))
 	if err != nil {
 		if errors.Is(err, domain.ErrConflict) {
+			metrics.Default().UserRegistrations.WithLabelValues("conflict").Inc()
 			abortConflict(c, "用户名或邮箱已存在")
 			return
 		}
+		metrics.Default().UserRegistrations.WithLabelValues("error").Inc()
 		abortInternal(c, "创建用户失败")
 		return
 	}
+	metrics.Default().UserRegistrations.WithLabelValues("success").Inc()
 	// 发射 user.registered 事件
 	if h.emitter != nil {
 		h.emitter.Emit(c.Request.Context(), &domain.Event{
@@ -102,6 +106,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	user, err := h.users.GetByUsername(c.Request.Context(), strings.TrimSpace(req.Username))
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
+			metrics.Default().LoginAttempts.WithLabelValues("user_not_found").Inc()
 			abortUnauthorized(c, "用户名或密码错误")
 			return
 		}
@@ -110,11 +115,13 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		metrics.Default().LoginAttempts.WithLabelValues("bad_password").Inc()
 		abortUnauthorized(c, "用户名或密码错误")
 		return
 	}
 
 	if user.Status != 1 {
+		metrics.Default().LoginAttempts.WithLabelValues("disabled").Inc()
 		abortForbidden(c, "账号已被禁用")
 		return
 	}
@@ -124,6 +131,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		abortInternal(c, "签发令牌失败")
 		return
 	}
+	metrics.Default().LoginAttempts.WithLabelValues("success").Inc()
 	c.JSON(http.StatusOK, gin.H{
 		"code":    string(domain.CodeOK),
 		"message": "ok",

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
@@ -83,10 +84,16 @@ func (h *DownloadHandler) Download(ctx context.Context, c *app.RequestContext) {
 		c.Header("Content-Length", strconv.FormatInt(contentLength, 10))
 		c.SetStatusCode(consts.StatusPartialContent)
 		c.SetBodyStream(obj, int(contentLength))
+		// 流式下载：真实传输字节（range 部分）
+		metrics.Default().DownloadsTotal.WithLabelValues("stream", "success").Inc()
+		metrics.Default().DownloadBytes.WithLabelValues("stream").Add(float64(contentLength))
 	} else {
 		c.Header("Content-Length", strconv.FormatInt(objInfo.Size, 10))
 		c.SetStatusCode(consts.StatusOK)
 		c.SetBodyStream(obj, int(objInfo.Size))
+		// 流式下载：真实传输字节（全量）
+		metrics.Default().DownloadsTotal.WithLabelValues("stream", "success").Inc()
+		metrics.Default().DownloadBytes.WithLabelValues("stream").Add(float64(objInfo.Size))
 	}
 }
 
@@ -105,6 +112,7 @@ func (h *DownloadHandler) Presign(ctx context.Context, c *app.RequestContext) {
 	userID := middleware.HertzUserID(c)
 	if err := h.repos.Quotas.IncrDownload(ctx, userID, file.Size); err != nil {
 		if errors.Is(err, domain.ErrQuotaExceeded) {
+			metrics.Default().DownloadsTotal.WithLabelValues("presign", "quota_exceeded").Inc()
 			hertzJSON(c, consts.StatusRequestEntityTooLarge, domain.CodeQuotaExceeded, "月度下载配额不足", nil)
 			return
 		}
@@ -114,9 +122,13 @@ func (h *DownloadHandler) Presign(ctx context.Context, c *app.RequestContext) {
 
 	rawURL, err := h.mc.PresignedDownloadURL(ctx, *file.StoragePath, h.presignExpireSec, file.Name, file.MimeType)
 	if err != nil {
+		metrics.Default().DownloadsTotal.WithLabelValues("presign", "error").Inc()
 		hertzInternal(c, "签发下载链接失败")
 		return
 	}
+	// 预签名下载：字节为近似值（file.Size，实际传输不过 TransferServer）
+	metrics.Default().DownloadsTotal.WithLabelValues("presign", "success").Inc()
+	metrics.Default().DownloadBytes.WithLabelValues("presign").Add(float64(file.Size))
 
 	c.JSON(consts.StatusOK, utils.H{
 		"code":    string(domain.CodeOK),

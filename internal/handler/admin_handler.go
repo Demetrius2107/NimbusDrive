@@ -12,6 +12,7 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/adminstore"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/quota"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
@@ -169,6 +170,7 @@ func (h *AdminHandler) ResetAllQuota(c *gin.Context) {
 		abortInternal(c, "批量重置配额失败")
 		return
 	}
+	metrics.Default().AdminQuotaResetAll.Inc()
 
 	detail, _ := json.Marshal(map[string]any{"quota": req.Quota, "affected": affected})
 	h.logAction(c, "admin.user.quota.reset_all", strPtr("user"), nil, detail)

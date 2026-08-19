@@ -11,6 +11,7 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
@@ -79,6 +80,7 @@ func (h *ShareDownloadHandler) Redeem(ctx context.Context, c *app.RequestContext
 		return
 	}
 	if !ok {
+		metrics.Default().DownloadsTotal.WithLabelValues("share", "invalid").Inc()
 		hertzNotFound(c, "下载令牌无效或已过期")
 		return
 	}
@@ -110,6 +112,7 @@ func (h *ShareDownloadHandler) Redeem(ctx context.Context, c *app.RequestContext
 	if h.quotas != nil {
 		if err := h.quotas.IncrDownload(ctx, file.UserID, file.Size); err != nil {
 			if errors.Is(err, domain.ErrQuotaExceeded) {
+				metrics.Default().DownloadsTotal.WithLabelValues("share", "quota_exceeded").Inc()
 				hertzJSON(c, consts.StatusRequestEntityTooLarge, domain.CodeQuotaExceeded, "月度下载配额不足", nil)
 				return
 			}
@@ -120,9 +123,13 @@ func (h *ShareDownloadHandler) Redeem(ctx context.Context, c *app.RequestContext
 
 	rawURL, err := h.mc.PresignedDownloadURL(ctx, *file.StoragePath, h.presignExpireSec, file.Name, file.MimeType)
 	if err != nil {
+		metrics.Default().DownloadsTotal.WithLabelValues("share", "error").Inc()
 		hertzInternal(c, "签发下载链接失败")
 		return
 	}
+	// 分享下载：字节为近似值（file.Size，实际传输不过 TransferServer）
+	metrics.Default().DownloadsTotal.WithLabelValues("share", "success").Inc()
+	metrics.Default().DownloadBytes.WithLabelValues("share").Add(float64(file.Size))
 
 	c.JSON(consts.StatusOK, utils.H{
 		"code":    string(domain.CodeOK),
