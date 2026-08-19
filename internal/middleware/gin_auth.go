@@ -20,9 +20,25 @@ const (
 // GinJWTAuth JWT 鉴权中间件（Gin 适配）。
 // 从 Authorization: Bearer <token> 解析 → 注入 user_id/username/is_admin → 失败返回 401。
 func GinJWTAuth(mgr *auth.JWTManager) gin.HandlerFunc {
+	return jwtAuth(mgr, false)
+}
+
+// GinJWTAuthAllowQuery 同 GinJWTAuth，但额外接受 ?token= query 作为令牌来源。
+// 仅用于 SSE 端点：浏览器原生 EventSource 无法设置自定义请求头，
+// 只能通过 query 传 JWT。普通接口仍用 GinJWTAuth（只认 header），避免 token 泄漏到访问日志。
+func GinJWTAuthAllowQuery(mgr *auth.JWTManager) gin.HandlerFunc {
+	return jwtAuth(mgr, true)
+}
+
+// jwtAuth 公共实现。allowQuery=true 时回退到 ?token= query。
+func jwtAuth(mgr *auth.JWTManager, allowQuery bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		header := c.GetHeader("Authorization")
-		tokenStr, ok := auth.ExtractBearer(header)
+		tokenStr, ok := auth.ExtractBearer(c.GetHeader("Authorization"))
+		if !ok && allowQuery {
+			if q := c.Query("token"); q != "" {
+				tokenStr, ok = q, true
+			}
+		}
 		if !ok {
 			abortUnauthorized(c, "缺少认证令牌")
 			return

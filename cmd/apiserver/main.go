@@ -263,7 +263,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 
 		// 配额实时推送：SSE 长连接，JWT 保护。Redis/PG 不可用时 handler 未构造，跳过。
 		if sseHandler != nil {
-			v1.GET("/quota/stream", middleware.GinJWTAuth(jwtMgr), sseHandler.Stream)
+			v1.GET("/quota/stream", middleware.GinJWTAuthAllowQuery(jwtMgr), sseHandler.Stream)
 		} else {
 			logger.L.Warn("quota SSE endpoint disabled: redis or postgres unavailable")
 		}
