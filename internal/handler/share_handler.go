@@ -30,16 +30,21 @@ const shareCacheDefaultTTL = 7 * 24 * time.Hour
 
 // ShareHandler 处理分享模块接口。
 type ShareHandler struct {
-	shares  *store.ShareRepo
-	files   *store.FileRepo
-	cache   *cache.Redis
-	db      *sqlx.DB
-	emitter *eventbus.Emitter // 可为 nil
+	shares        *store.ShareRepo
+	files         *store.FileRepo
+	cache         *cache.Redis
+	db            *sqlx.DB
+	emitter       *eventbus.Emitter // 可为 nil
+	dlTokenTTL    time.Duration     // 分享下载能力令牌 TTL
 }
 
 // NewShareHandler 构造 ShareHandler。
-func NewShareHandler(shares *store.ShareRepo, files *store.FileRepo, cache *cache.Redis, db *sqlx.DB, emitter *eventbus.Emitter) *ShareHandler {
-	return &ShareHandler{shares: shares, files: files, cache: cache, db: db, emitter: emitter}
+// dlTokenTTL 为分享下载能力令牌 TTL（<=0 则用默认 5min）。
+func NewShareHandler(shares *store.ShareRepo, files *store.FileRepo, cache *cache.Redis, db *sqlx.DB, emitter *eventbus.Emitter, dlTokenTTL time.Duration) *ShareHandler {
+	if dlTokenTTL <= 0 {
+		dlTokenTTL = 5 * time.Minute
+	}
+	return &ShareHandler{shares: shares, files: files, cache: cache, db: db, emitter: emitter, dlTokenTTL: dlTokenTTL}
 }
 
 // --- 鉴权接口（JWT）---
@@ -300,15 +305,23 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 		expiresIn = &sec
 	}
 
+	// 签发分享下载能力令牌：APIServer 校验通过即授权，TransferServer 凭令牌兑换预签名 URL。
+	// Redis 不可用或签发失败时不阻塞 validate 主流程，仅不带 download 字段（前端降级提示）。
+	data := gin.H{
+		"access_allowed":         true,
+		"access_count_remaining": remaining,
+		"expires_in":             expiresIn,
+		"file_id":                share.FileID,
+	}
+	if token, err := h.issueDownloadToken(c.Request.Context(), shareID, share.FileID); err == nil && token != "" {
+		data["download_token"] = token
+		data["download_url"] = "/api/v1/s/download/" + token
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code":    string(domain.CodeOK),
 		"message": "ok",
-		"data": gin.H{
-			"access_allowed":          true,
-			"access_count_remaining":  remaining,
-			"expires_in":              expiresIn,
-			"file_id":                 share.FileID,
-		},
+		"data":    data,
 	})
 }
 
@@ -352,6 +365,15 @@ func (h *ShareHandler) emitShareAccessed(shareID string, fileID int64, accessorI
 			"accessor_ip": accessorIP,
 		},
 	})
+}
+
+// issueDownloadToken 签发分享下载能力令牌。cache 为 nil 或签发失败时返回空串+err，
+// 调用方据此决定是否在响应中带 download 字段。
+func (h *ShareHandler) issueDownloadToken(ctx context.Context, shareID string, fileID int64) (string, error) {
+	if h.cache == nil {
+		return "", fmt.Errorf("cache unavailable")
+	}
+	return h.cache.IssueShareDownloadToken(ctx, shareID, fileID, h.dlTokenTTL)
 }
 
 // fetchShare 取分享：先查 Redis，miss 回源 PG 并回填缓存。
