@@ -72,3 +72,6 @@ observability:
   otlp_endpoint: localhost:4317
   service_name: ""
   sample_ratio: 1.0
+  # Prometheus 指标 + /metrics 端点。抓取端走 Grafana 栈（见 deploy/observability/）。
+  metrics_enabled: true
+  metrics_path: /metrics

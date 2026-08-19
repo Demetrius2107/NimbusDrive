@@ -104,7 +104,7 @@ type EventBusConfig struct {
 	StreamMaxLen  int64  `mapstructure:"stream_max_len"`  // 每条 stream 近似上限（XADD MAXLEN ~）
 }
 
-// ObservabilityConfig 描述分布式追踪（OpenTelemetry）参数。
+// ObservabilityConfig 描述可观测性参数（追踪 + 指标）。
 type ObservabilityConfig struct {
 	// Exporter trace 导出方式：stdout（默认，写 stderr）| otlp（gRPC 推 collector）| none（no-op 降级）。
 	Exporter string `mapstructure:"exporter"`
@@ -114,6 +114,10 @@ type ObservabilityConfig struct {
 	ServiceName string `mapstructure:"service_name"`
 	// SampleRatio 采样率 0-1，1.0=全采样。用 ParentBased(TraceIDRatioBased) 策略。
 	SampleRatio float64 `mapstructure:"sample_ratio"`
+	// MetricsEnabled 是否启用 Prometheus 指标 + /metrics 端点。默认 true。
+	MetricsEnabled bool `mapstructure:"metrics_enabled"`
+	// MetricsPath Prometheus 抓取路径，默认 /metrics。
+	MetricsPath string `mapstructure:"metrics_path"`
 }
 
 // Load 从 configs/ 目录读取指定名称的 yaml，并叠加同名环境变量覆盖。
@@ -147,6 +151,9 @@ func Load(name string) (*Config, error) {
 	v.SetDefault("observability.exporter", "stdout")
 	v.SetDefault("observability.otlp_endpoint", "localhost:4317")
 	v.SetDefault("observability.sample_ratio", 1.0)
+	// 指标默认启用 + /metrics 路径
+	v.SetDefault("observability.metrics_enabled", true)
+	v.SetDefault("observability.metrics_path", "/metrics")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", name, err)
