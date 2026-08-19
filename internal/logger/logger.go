@@ -2,10 +2,12 @@
 package logger
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -72,4 +74,22 @@ func Sync() {
 	if L != nil {
 		_ = L.Sync()
 	}
+}
+
+// FromContext 返回带 trace_id/span_id 字段的 logger。
+// 从 ctx 的 active span 提取 SpanContext，注入为 zap 字段，
+// 使每条日志都能关联到所属 trace。无 active span 时返回全局 L（无 trace 字段）。
+// 中间件（GinLogger/HertzLogger）和业务 handler 应优先用 FromContext(ctx) 替代直接用 L。
+func FromContext(ctx context.Context) *zap.Logger {
+	if L == nil || ctx == nil {
+		return L
+	}
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return L
+	}
+	return L.With(
+		zap.String("trace_id", sc.TraceID().String()),
+		zap.String("span_id", sc.SpanID().String()),
+	)
 }
