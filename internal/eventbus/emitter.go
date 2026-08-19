@@ -76,6 +76,36 @@ func (e *Emitter) DroppedCount() uint64 {
 	return atomic.LoadUint64(&e.droppedCount)
 }
 
+// Publish 同步投递一条事件到 Redis Streams（XAdd），返回错误供调用方决策。
+// 与 Emit（非阻塞 channel）不同：Publish 直接 XAdd，用于 OutboxRelay——relay 需要
+// 知道 XAdd 是否成功以决定回写 published_at 还是重试。client 为 nil 时返回错误。
+// evt.TraceContext 应由调用方（outbox.Enqueue 时）预置；此处不覆盖。
+func (e *Emitter) Publish(ctx context.Context, evt *domain.Event) error {
+	if e == nil || e.client == nil {
+		return fmt.Errorf("emitter client nil")
+	}
+	values, err := encodeEvent(evt)
+	if err != nil {
+		return fmt.Errorf("encode event: %w", err)
+	}
+
+	stream := e.streamPrefix + evt.Type
+	args := &redis.XAddArgs{
+		Stream: stream,
+		Values: values,
+	}
+	if e.maxLen > 0 {
+		args.MaxLen = e.maxLen
+		args.Approx = true
+	}
+
+	if err := e.client.XAdd(ctx, args).Err(); err != nil {
+		return fmt.Errorf("xadd to %s: %w", stream, err)
+	}
+	atomic.AddUint64(&e.emittedCount, 1)
+	return nil
+}
+
 // EmittedCount 返回成功 XADD 到 Redis Stream 的事件总数。
 // 供 metrics.InfraCollector scrape（与 DroppedCount 对比可得事件投递成功率）。
 func (e *Emitter) EmittedCount() uint64 {
