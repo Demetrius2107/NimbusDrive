@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 // Emit 不阻塞、不 panic，返回 false。
 func TestEmitter_NilClient_NoOp(t *testing.T) {
 	e := NewEmitter(nil, "nimbus:events:", 16, 10000)
-	if e.Emit(&domain.Event{Type: "test"}) {
+	if e.Emit(context.Background(), &domain.Event{Type: "test"}) {
 		t.Fatal("nil client Emit should return false")
 	}
 	if e.DroppedCount() != 0 {
@@ -37,7 +38,7 @@ func TestEmitter_BufferFull_Drop(t *testing.T) {
 	e := NewEmitter(nil, "nimbus:events:", 4, 10000)
 	// nil client → Emit 降级返回 false，不推 channel、不计数
 	for i := 0; i < 10; i++ {
-		if e.Emit(&domain.Event{Type: "test", ID: "e"}) {
+		if e.Emit(context.Background(), &domain.Event{Type: "test", ID: "e"}) {
 			t.Fatalf("nil client Emit should return false (iteration %d)", i)
 		}
 	}
@@ -89,7 +90,7 @@ func TestEmitter_ConcurrentEmit(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < total/8; j++ {
-				ok := e.Emit(&domain.Event{Type: "test", ID: "e"})
+				ok := e.Emit(context.Background(), &domain.Event{Type: "test", ID: "e"})
 				mu.Lock()
 				if ok {
 					success++
@@ -120,7 +121,7 @@ func TestEmitter_DrainOnClose_NoHang(t *testing.T) {
 	e := NewEmitter(nil, "nimbus:events:", 8, 10000)
 	// 填入一些事件
 	for i := 0; i < 4; i++ {
-		e.Emit(&domain.Event{Type: "test", ID: "e"})
+		e.Emit(context.Background(), &domain.Event{Type: "test", ID: "e"})
 	}
 	done := make(chan struct{})
 	go func() {

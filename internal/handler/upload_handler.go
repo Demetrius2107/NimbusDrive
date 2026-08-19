@@ -559,7 +559,7 @@ func (h *UploadHandler) emitFileUploaded(ctx context.Context, fileID, userID int
 	if parentID != nil {
 		payload["parent_id"] = parentID
 	}
-	h.emitter.Emit(&domain.Event{
+	h.emitter.Emit(ctx, &domain.Event{
 		ID:         uuid.NewString(),
 		Type:       domain.EventFileUploaded,
 		OccurredAt: time.Now().UTC(),

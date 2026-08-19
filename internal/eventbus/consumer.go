@@ -9,8 +9,10 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Handler 处理一条事件。返回 nil 表示处理成功（消息将被 ACK）；
@@ -183,6 +185,15 @@ func (c *Consumer) handleMessage(ctx context.Context, stream string, msg redis.X
 		)
 		deliveryCount = 1
 	}
+
+	// 提取 trace context 并起 consumer span，续接生产者 trace。
+	// evt.TraceContext 由 Emitter 从请求 ctx 注入；无则起根 span。
+	ctx = tracing.Extract(ctx, evt.TraceContext)
+	tracer := tracing.Tracer("eventbus.consumer")
+	ctx, span := tracer.Start(ctx, "consume."+evt.Type,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+	)
+	defer span.End()
 
 	if err := c.handler(ctx, evt); err != nil {
 		if deliveryCount >= c.maxRetries {

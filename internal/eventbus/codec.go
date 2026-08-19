@@ -16,15 +16,16 @@ import (
 // 其余字段（id/type/occurred_at/actor_id）作为独立字段冗余存放，
 // 便于 XREADGROUP 后无需反序列化即可按 type 路由。
 const (
-	streamFieldID         = "id"
-	streamFieldType       = "type"
-	streamFieldOccurredAt = "occurred_at"
-	streamFieldActorID    = "actor_id"
-	streamFieldPayload    = "payload"
+	streamFieldID           = "id"
+	streamFieldType         = "type"
+	streamFieldOccurredAt   = "occurred_at"
+	streamFieldActorID      = "actor_id"
+	streamFieldPayload      = "payload"
+	streamFieldTraceContext = "trace_context"
 )
 
 // encodeEvent 把 Event 编码为 XADD 的 Values（map[string]interface{}，值均为字符串）。
-// payload 整体 JSON 序列化后存放，消费者解码后按 type 还原。
+// payload 和 trace_context 整体 JSON 序列化后存放，消费者解码后按 type 还原。
 func encodeEvent(evt *domain.Event) (map[string]interface{}, error) {
 	if evt == nil {
 		return nil, fmt.Errorf("nil event")
@@ -33,13 +34,22 @@ func encodeEvent(evt *domain.Event) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
-	return map[string]interface{}{
+	values := map[string]interface{}{
 		streamFieldID:         evt.ID,
 		streamFieldType:       evt.Type,
 		streamFieldOccurredAt: evt.OccurredAt.UTC().Format(time.RFC3339Nano),
 		streamFieldActorID:    fmt.Sprintf("%d", evt.ActorID),
 		streamFieldPayload:    string(payloadBytes),
-	}, nil
+	}
+	// trace_context 可选：无追踪上下文时不写字段，省 Stream 空间。
+	if len(evt.TraceContext) > 0 {
+		tcBytes, err := json.Marshal(evt.TraceContext)
+		if err != nil {
+			return nil, fmt.Errorf("marshal trace_context: %w", err)
+		}
+		values[streamFieldTraceContext] = string(tcBytes)
+	}
+	return values, nil
 }
 
 // decodeEvent 从 XREADGROUP 返回的消息 Values 还原 Event。
@@ -72,11 +82,20 @@ func decodeEvent(values map[string]interface{}) (*domain.Event, error) {
 		}
 	}
 
+	// trace_context 可选：旧消息无此字段，跳过不影响。
+	var traceCtx map[string]string
+	if s := get(streamFieldTraceContext); s != "" {
+		if err := json.Unmarshal([]byte(s), &traceCtx); err != nil {
+			return nil, fmt.Errorf("unmarshal trace_context: %w", err)
+		}
+	}
+
 	return &domain.Event{
-		ID:         get(streamFieldID),
-		Type:       get(streamFieldType),
-		OccurredAt: occurredAt,
-		ActorID:    actorID,
-		Payload:    payload,
+		ID:           get(streamFieldID),
+		Type:         get(streamFieldType),
+		OccurredAt:   occurredAt,
+		ActorID:      actorID,
+		Payload:      payload,
+		TraceContext: traceCtx,
 	}, nil
 }

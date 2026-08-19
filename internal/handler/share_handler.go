@@ -147,7 +147,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 	h.cacheShare(c.Request.Context(), share)
 
 	// 发射 share.created 事件
-	h.emitShareCreated(share)
+	h.emitShareCreated(c.Request.Context(), share)
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":    string(domain.CodeOK),
@@ -284,7 +284,7 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 	_ = h.cache.IncrShareAccess(c.Request.Context(), shareID)
 
 	// 发射 share.accessed 事件（公开端点，无登录用户，记录访问者 IP）
-	h.emitShareAccessed(shareID, share.FileID, c.ClientIP())
+	h.emitShareAccessed(c.Request.Context(), shareID, share.FileID, c.ClientIP())
 
 	// 计算剩余次数与过期秒数
 	var remaining *int
@@ -328,7 +328,8 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 // --- 辅助 ---
 
 // emitShareCreated 发射 share.created 事件。emitter 为 nil 时静默降级。
-func (h *ShareHandler) emitShareCreated(share *domain.Share) {
+// ctx 用于注入 trace context，使事件跨 Redis Streams 传播追踪上下文。
+func (h *ShareHandler) emitShareCreated(ctx context.Context, share *domain.Share) {
 	if h.emitter == nil {
 		return
 	}
@@ -340,7 +341,7 @@ func (h *ShareHandler) emitShareCreated(share *domain.Share) {
 	if share.ExpiresAt != nil {
 		payload["expires_at"] = *share.ExpiresAt
 	}
-	h.emitter.Emit(&domain.Event{
+	h.emitter.Emit(ctx, &domain.Event{
 		ID:         uuid.NewString(),
 		Type:       domain.EventShareCreated,
 		OccurredAt: time.Now().UTC(),
@@ -350,11 +351,12 @@ func (h *ShareHandler) emitShareCreated(share *domain.Share) {
 }
 
 // emitShareAccessed 发射 share.accessed 事件。公开端点无登录用户，ActorID=0。
-func (h *ShareHandler) emitShareAccessed(shareID string, fileID int64, accessorIP string) {
+// ctx 用于注入 trace context。
+func (h *ShareHandler) emitShareAccessed(ctx context.Context, shareID string, fileID int64, accessorIP string) {
 	if h.emitter == nil {
 		return
 	}
-	h.emitter.Emit(&domain.Event{
+	h.emitter.Emit(ctx, &domain.Event{
 		ID:         uuid.NewString(),
 		Type:       domain.EventShareAccessed,
 		OccurredAt: time.Now().UTC(),
