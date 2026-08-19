@@ -135,6 +135,15 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	} else {
 		logger.L.Warn("download routes disabled: store or minio unavailable")
 	}
+
+	// 分享下载兑换：公开端点，无 JWT。凭能力令牌兑换预签名直连 URL。
+	// 三依赖齐全才注册：rc 兑换令牌、st 查文件、mc 签 URL。
+	if st != nil && mc != nil && rc != nil {
+		sdh := handler.NewShareDownloadHandler(st.Repos(), mc, rc, minioCfg.PresignExpireSec)
+		v1.GET("/s/download/:token", sdh.Redeem)
+	} else {
+		logger.L.Warn("share download route disabled: store/minio/redis unavailable")
+	}
 }
 
 // healthz 健康检查：检查 PG/Redis/MinIO 连通性。
