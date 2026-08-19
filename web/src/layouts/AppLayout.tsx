@@ -2,6 +2,8 @@ import { Layout, Menu, Button, Avatar, Progress } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { FileOutlined, ShareAltOutlined, DashboardOutlined, ThunderboltOutlined, LogoutOutlined, DeleteOutlined, AuditOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../stores/auth'
+import { useQuotaStore } from '../stores/quota'
+import { useQuotaStream } from '../hooks/useQuotaStream'
 import { palette } from '../theme'
 
 const { Header, Sider, Content } = Layout
@@ -10,6 +12,10 @@ export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { username, logout, isAdmin } = useAuthStore()
+  // 建立配额推送通道：首屏 fetchMe + SSE 增量 + 降级轮询。
+  // 统一在布局层建立，保证任意页面侧栏配额条都有实时数据。
+  useQuotaStream()
+  const { storageQuota, usedStorage } = useQuotaStore()
 
   const items = [
     { key: '/files', icon: <FileOutlined />, label: '文件' },
@@ -24,8 +30,8 @@ export function AppLayout() {
     navigate('/login', { replace: true })
   }
 
-  // 侧栏底部迷你配额条（静态占位，接真实数据后替换）。
-  const quotaPercent = 16
+  // 侧栏底部迷你配额条（真实数据，由 SSE/轮询驱动）。
+  const quotaPercent = storageQuota > 0 ? Math.round((usedStorage / storageQuota) * 100) : 0
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
