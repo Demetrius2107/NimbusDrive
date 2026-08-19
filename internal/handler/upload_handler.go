@@ -422,14 +422,11 @@ func (h *UploadHandler) instantUpload(ctx context.Context, userID int64, req Che
 	var fileID int64
 	err := h.withTx(ctx, func(tx *sqlx.Tx) error {
 		// ref_count++（原子）。
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO file_hashes (hash_sha256, storage_path, size, ref_count)
-			VALUES ($1, $2, $3, 1)
-			ON CONFLICT (hash_sha256) DO UPDATE SET ref_count = file_hashes.ref_count + 1`,
-			req.HashSHA256, storagePath, req.Size); err != nil {
+		if err := h.repos.Hashes.Upsert(ctx, tx, req.HashSHA256, storagePath, req.Size); err != nil {
 			return fmt.Errorf("upsert file_hash: %w", err)
 		}
-		// 新建 files 记录（completed）。
+		// 新建 files 记录（completed）。秒传直接落 completed，不经 init 状态机，
+		// 故无对应 repo 方法（FileRepo.Create 落 init 占位）；此处保留内联 INSERT。
 		if err := tx.GetContext(ctx, &fileID, `
 			INSERT INTO files (user_id, parent_id, name, size, mime_type, is_folder, hash_sha256, chunk_count, status, storage_path)
 			VALUES ($1, $2, $3, $4, $5, false, $6, 0, 'completed', $7)
@@ -438,15 +435,8 @@ func (h *UploadHandler) instantUpload(ctx context.Context, userID int64, req Che
 			return fmt.Errorf("insert file: %w", err)
 		}
 		// 配额扣减（原子条件更新）。
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET used_storage = used_storage + $2 WHERE id = $1 AND used_storage + $2 <= storage_quota`,
-			userID, req.Size)
-		if err != nil {
-			return fmt.Errorf("incr used_storage: %w", err)
-		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			return domain.ErrQuotaExceeded
+		if err := h.repos.Users.IncrUsedStorage(ctx, tx, userID, req.Size); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -454,33 +444,20 @@ func (h *UploadHandler) instantUpload(ctx context.Context, userID int64, req Che
 }
 
 // completeTransaction 合并完成后的元数据事务。
+// 三步走 repo 方法（executor 接口接受 tx），消除原内联 SQL 与 repo 的漂移。
 func (h *UploadHandler) completeTransaction(ctx context.Context, session *domain.UploadSession, storagePath string) error {
 	return h.withTx(ctx, func(tx *sqlx.Tx) error {
 		// file_hashes upsert（ref_count++）。
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO file_hashes (hash_sha256, storage_path, size, ref_count)
-			VALUES ($1, $2, $3, 1)
-			ON CONFLICT (hash_sha256) DO UPDATE SET ref_count = file_hashes.ref_count + 1`,
-			session.HashSHA256, storagePath, session.TotalSize); err != nil {
+		if err := h.repos.Hashes.Upsert(ctx, tx, session.HashSHA256, storagePath, session.TotalSize); err != nil {
 			return fmt.Errorf("upsert file_hash: %w", err)
 		}
-		// files 标记 completed。
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE files SET status = 'completed', hash_sha256 = $2, storage_path = $3, chunk_count = $4, size = $5
-			WHERE id = $1`,
-			session.FileID, session.HashSHA256, storagePath, session.TotalChunks, session.TotalSize); err != nil {
+		// files 标记 completed（含真实 size，修复原 repo 方法 size=files.size 自赋值 bug）。
+		if err := h.repos.Files.MarkCompleted(ctx, tx, session.FileID, session.HashSHA256, storagePath, session.TotalChunks, session.TotalSize); err != nil {
 			return fmt.Errorf("mark file completed: %w", err)
 		}
-		// 配额扣减。
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET used_storage = used_storage + $2 WHERE id = $1 AND used_storage + $2 <= storage_quota`,
-			session.UserID, session.TotalSize)
-		if err != nil {
-			return fmt.Errorf("incr used_storage: %w", err)
-		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			return domain.ErrQuotaExceeded
+		// 配额扣减（原子条件更新）。
+		if err := h.repos.Users.IncrUsedStorage(ctx, tx, session.UserID, session.TotalSize); err != nil {
+			return err
 		}
 		return nil
 	})
