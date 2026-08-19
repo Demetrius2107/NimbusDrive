@@ -18,6 +18,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -371,11 +372,12 @@ func (h *ShareHandler) emitShareAccessed(ctx context.Context, shareID string, fi
 
 // issueDownloadToken 签发分享下载能力令牌。cache 为 nil 或签发失败时返回空串+err，
 // 调用方据此决定是否在响应中带 download 字段。
+// 从 ctx 提取 traceparent 注入令牌，使 TransferServer 兑换时续接 trace。
 func (h *ShareHandler) issueDownloadToken(ctx context.Context, shareID string, fileID int64) (string, error) {
 	if h.cache == nil {
 		return "", fmt.Errorf("cache unavailable")
 	}
-	return h.cache.IssueShareDownloadToken(ctx, shareID, fileID, h.dlTokenTTL)
+	return h.cache.IssueShareDownloadToken(ctx, shareID, fileID, h.dlTokenTTL, tracing.TraceParentString(ctx))
 }
 
 // fetchShare 取分享：先查 Redis，miss 回源 PG 并回填缓存。

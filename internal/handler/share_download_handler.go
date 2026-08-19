@@ -13,9 +13,11 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/utils"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // fileGetter 抽象文件查询，便于单测 mock（避免依赖 *store.Repositories）。
@@ -80,6 +82,14 @@ func (h *ShareDownloadHandler) Redeem(ctx context.Context, c *app.RequestContext
 		hertzNotFound(c, "下载令牌无效或已过期")
 		return
 	}
+
+	// 从令牌提取 trace context，续接 APIServer ValidateShare 的 trace。
+	// 令牌是跨客户端中介边界的唯一 trace 载体（两跳独立 HTTP 请求）。
+	ctx = tracing.ExtractFromTraceParent(ctx, tok.TraceParent)
+	_, span := tracing.Tracer("share.download").Start(ctx, "ShareDownload.Redeem",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	defer span.End()
 
 	// 查文件元信息（令牌即授权凭证，不校验 owner）。
 	file, err := h.files.GetByID(ctx, tok.FileID)
