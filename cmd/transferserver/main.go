@@ -19,6 +19,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -37,6 +38,22 @@ func main() {
 		panic("init logger: " + err.Error())
 	}
 	defer logger.Sync()
+
+	// 分布式追踪：TracerProvider 在 logger 之后初始化，defer Shutdown 先于 logger.Sync。
+	serviceName := cfg.Observability.ServiceName
+	if serviceName == "" {
+		serviceName = "transfer"
+	}
+	tp, err := tracing.Init(serviceName, cfg.Observability.Exporter, cfg.Observability.OTLPEndpoint, cfg.Observability.SampleRatio)
+	if err != nil {
+		logger.L.Warn("tracer init failed, tracing disabled", zap.Error(err))
+	} else {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tracing.Shutdown(shutdownCtx, tp)
+		}()
+	}
 
 	logger.L.Info("starting transferserver",
 		zap.String("env", cfg.App.Env),
@@ -86,6 +103,7 @@ func main() {
 	)
 	h.Use(
 		middleware.HertzRequestID(),
+		middleware.HertzTracer("transferserver"),
 		middleware.HertzLogger(),
 		middleware.HertzRecovery(),
 	)

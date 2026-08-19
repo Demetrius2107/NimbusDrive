@@ -22,6 +22,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/quota"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
@@ -39,6 +40,23 @@ func main() {
 		panic("init logger: " + err.Error())
 	}
 	defer logger.Sync()
+
+	// 分布式追踪：TracerProvider 在 logger 之后初始化（tracing 可能记日志），
+	// 在 logger.Sync 之前 defer Shutdown（LIFO：trace 先 flush 再 sync 日志）。
+	serviceName := cfg.Observability.ServiceName
+	if serviceName == "" {
+		serviceName = "api"
+	}
+	tp, err := tracing.Init(serviceName, cfg.Observability.Exporter, cfg.Observability.OTLPEndpoint, cfg.Observability.SampleRatio)
+	if err != nil {
+		logger.L.Warn("tracer init failed, tracing disabled", zap.Error(err))
+	} else {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tracing.Shutdown(shutdownCtx, tp)
+		}()
+	}
 
 	logger.L.Info("starting apiserver",
 		zap.String("env", cfg.App.Env),
@@ -82,6 +100,7 @@ func main() {
 	r := gin.New()
 	r.Use(
 		middleware.GinRequestID(),
+		middleware.GinTracer("apiserver"),
 		middleware.GinLogger(),
 		middleware.GinRecovery(),
 	)
