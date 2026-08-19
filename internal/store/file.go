@@ -249,6 +249,23 @@ func (r *FileRepo) ListTrash(ctx context.Context, userID int64, page, size int) 
 	return nodes, total, nil
 }
 
+// ListExpiredTrash 列出回收站中超过保留期的顶层节点（deleted_at < now()-retention）。
+// 仅返回顶层（parent_id 为 NULL 或 parent 已不在回收站的）以避免重复清理子树——
+// 实际清理用 ListDescendants + HardDeleteRecursive 一次性处理整个子树。
+// cron 调用，batch 控制单批大小。返回节点含 user_id/size 供配额回补。
+func (r *FileRepo) ListExpiredTrash(ctx context.Context, retentionDays, limit int) ([]domain.FileNode, error) {
+	q := fmt.Sprintf(`
+		SELECT %s FROM files
+		WHERE deleted_at IS NOT NULL AND deleted_at < now() - ($1 || ' days')::interval
+		ORDER BY deleted_at
+		LIMIT $2`, fileCols)
+	var nodes []domain.FileNode
+	if err := r.db.SelectContext(ctx, &nodes, q, retentionDays, limit); err != nil {
+		return nil, fmt.Errorf("list expired trash: %w", err)
+	}
+	return nodes, nil
+}
+
 // SoftDeleteRecursive 递归软删除：将节点及其所有后代标记为已删除（移入回收站）。
 // 用递归 CTE 一次性找出子树所有 ID，批量 UPDATE，避免多次往返。
 func (r *FileRepo) SoftDeleteRecursive(ctx context.Context, id int64) error {
