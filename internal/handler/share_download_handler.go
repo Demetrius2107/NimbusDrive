@@ -18,17 +18,32 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// fileGetter 抽象文件查询，便于单测 mock（避免依赖 *store.Repositories）。
+type fileGetter interface {
+	GetByID(ctx context.Context, id int64) (*domain.FileNode, error)
+}
+
+// tokenRedeemer 抽象令牌兑换，便于单测 mock（避免依赖 *cache.Redis）。
+type tokenRedeemer interface {
+	RedeemShareDownloadToken(ctx context.Context, token string) (cache.ShareDownloadToken, bool, error)
+}
+
+// presigner 抽象预签名 URL 签发，便于单测 mock（避免依赖 *storage.MinIO）。
+type presigner interface {
+	PresignedDownloadURL(ctx context.Context, storagePath string, expire int, filename, mimeType string) (string, error)
+}
+
 // ShareDownloadHandler 处理 TransferServer 的分享下载兑换端点（公开，无 JWT）。
 type ShareDownloadHandler struct {
-	repos            *store.Repositories
-	mc               *storage.MinIO
-	rc               *cache.Redis
+	files            fileGetter
+	mc               presigner
+	rc               tokenRedeemer
 	presignExpireSec int
 }
 
 // NewShareDownloadHandler 构造 ShareDownloadHandler。
 func NewShareDownloadHandler(repos *store.Repositories, mc *storage.MinIO, rc *cache.Redis, presignExpireSec int) *ShareDownloadHandler {
-	return &ShareDownloadHandler{repos: repos, mc: mc, rc: rc, presignExpireSec: presignExpireSec}
+	return &ShareDownloadHandler{files: repos.Files, mc: mc, rc: rc, presignExpireSec: presignExpireSec}
 }
 
 // Redeem GET /api/v1/s/download/:token（公开，无 JWT）
@@ -61,7 +76,7 @@ func (h *ShareDownloadHandler) Redeem(ctx context.Context, c *app.RequestContext
 	}
 
 	// 查文件元信息（令牌即授权凭证，不校验 owner）。
-	file, err := h.repos.Files.GetByID(ctx, tok.FileID)
+	file, err := h.files.GetByID(ctx, tok.FileID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			hertzNotFound(c, "文件不存在")
