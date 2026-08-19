@@ -21,11 +21,13 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus/consumers"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/quota"
 	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -57,6 +59,11 @@ func main() {
 			_ = tracing.Shutdown(shutdownCtx, tp)
 		}()
 	}
+
+	// Prometheus 指标：紧跟 tracing 初始化（exemplar 需读 span context）。
+	// metrics_enabled=false 时仍 Init（Default 返回 noop，/metrics 不挂载）。
+	mc := metrics.Init(serviceName)
+	defer metrics.Shutdown()
 
 	logger.L.Info("starting apiserver",
 		zap.String("env", cfg.App.Env),
@@ -101,6 +108,7 @@ func main() {
 	r.Use(
 		middleware.GinRequestID(),
 		middleware.GinTracer("apiserver"),
+		middleware.GinMetrics("api"),
 		middleware.GinLogger(),
 		middleware.GinRecovery(),
 	)
@@ -117,6 +125,7 @@ func main() {
 	// 关闭顺序（LIFO）：消费者 → emitter → la.Close → rc.Close（均 defer）。
 	var emitter *eventbus.Emitter
 	var consumerClosers []func()
+	var builtConsumers []*eventbus.Consumer // 保留引用供 metrics infra collector scrape
 	if rc != nil {
 		emitter = eventbus.NewEmitter(rc.Client, cfg.EventBus.StreamPrefix, cfg.EventBus.BufferSize, cfg.EventBus.StreamMaxLen)
 		defer emitter.Close() // 在消费者 Close 之后执行
@@ -145,6 +154,7 @@ func main() {
 				logger.L.Error("consumer start failed", zap.String("name", b.name), zap.Error(err))
 				continue
 			}
+			builtConsumers = append(builtConsumers, c)
 			consumerClosers = append(consumerClosers, c.Close)
 		}
 		// 消费者最先关闭（后注册先执行，在 emitter.Close 之前）
@@ -156,6 +166,22 @@ func main() {
 	} else {
 		logger.L.Warn("event bus disabled: redis unavailable")
 	}
+
+	// 注册 infra 指标 collector（scrape-time 查 emitter/consumer/logAggregator）。
+	// 各源可空（Redis/PG 不可用时降级跳过对应指标）。
+	var multiConsumer metrics.ConsumerMetrics
+	if len(builtConsumers) > 0 {
+		csms := make([]metrics.ConsumerMetrics, len(builtConsumers))
+		for i, c := range builtConsumers {
+			csms[i] = c
+		}
+		multiConsumer = metrics.NewMultiConsumer(csms...)
+	}
+	mc.RegisterInfra(metrics.InfraSources{
+		Emitter:  emitter,
+		Consumer: multiConsumer,
+		LogAgg:   la,
+	})
 
 	// 配额实时推送：Redis 可用时构造 Notifier + SSE handler + 月度重置 cron。
 	var notifier *quota.Notifier
@@ -173,6 +199,14 @@ func main() {
 	} else {
 		logger.L.Warn("quota streaming disabled: redis unavailable")
 	}
+	// /metrics 端点：无 JWT 保护（与 /healthz 同级），生产用反向代理/网络隔离保护。
+	// EnableOpenMetrics 协商：Prometheus 2.5+ 优先用 OpenMetrics，exemplar 仅此格式可传。
+	if cfg.Observability.MetricsEnabled {
+		r.GET(cfg.Observability.MetricsPath, gin.WrapH(promhttp.HandlerFor(mc.Registry, promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
+		})))
+	}
+
 	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la, notifier, sseHandler, cfg.MinIO)
 
 	srv := &http.Server{
