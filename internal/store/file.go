@@ -256,7 +256,7 @@ func (r *FileRepo) ListTrash(ctx context.Context, userID int64, page, size int) 
 func (r *FileRepo) ListExpiredTrash(ctx context.Context, retentionDays, limit int) ([]domain.FileNode, error) {
 	q := fmt.Sprintf(`
 		SELECT %s FROM files
-		WHERE deleted_at IS NOT NULL AND deleted_at < now() - ($1 || ' days')::interval
+		WHERE deleted_at IS NOT NULL AND deleted_at < now() - make_interval(days => $1)
 		ORDER BY deleted_at
 		LIMIT $2`, fileCols)
 	var nodes []domain.FileNode
