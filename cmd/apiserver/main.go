@@ -108,13 +108,14 @@ func main() {
 			BlockMs:       cfg.EventBus.BlockMs,
 			DLQPrefix:     cfg.EventBus.DLQPrefix,
 		}
-		// 4 个消费者：审计（需 LogAggregator）、上传统计、配额对账、no-op 骨架
+		// 5 个消费者：审计（需 LogAggregator）、上传统计、传输配额、配额对账、no-op 骨架
 		builders := []struct {
 			name    string
 			builder consumers.ConsumerBuilder
 		}{
 			{"api-audit", consumers.NewAuditConsumer(la)},
 			{"api-upload-stats", consumers.NewUploadStatsConsumer(rc.Client)},
+			{"api-quota", consumers.NewQuotaConsumer(st.DB)},
 			{"api-quota-reconcile", consumers.NewQuotaReconcileConsumer(st.DB, rc.Client)},
 			{"api-noop", consumers.NewNoopConsumer()},
 		}
