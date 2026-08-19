@@ -9,6 +9,7 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
@@ -48,9 +49,17 @@ func NewEmitter(client *redis.Client, streamPrefix string, bufSize int, maxLen i
 
 // Emit 非阻塞推送一条事件。channel 满或 Redis 不可用时返回 false。
 // 调用方不应在此阻塞——业务响应延迟优先于事件投递。
-func (e *Emitter) Emit(evt *domain.Event) bool {
+//
+// ctx 用于提取 W3C trace context 注入 evt.TraceContext，使事件跨 Redis Streams
+// 传播追踪上下文。Consumer 解码后提取，起 consumer span 续接 trace。
+// evt 已有 TraceContext 时不覆盖（调用方预置优先）。
+func (e *Emitter) Emit(ctx context.Context, evt *domain.Event) bool {
 	if e == nil || e.client == nil {
 		return false
+	}
+	// 注入 trace context（无 active span 时为 nil，omitempty 不占字段）。
+	if evt.TraceContext == nil && ctx != nil {
+		evt.TraceContext = tracing.Inject(ctx)
 	}
 	select {
 	case e.ch <- evt:

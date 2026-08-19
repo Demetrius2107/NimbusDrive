@@ -62,7 +62,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 	// 发射 user.registered 事件
 	if h.emitter != nil {
-		h.emitter.Emit(&domain.Event{
+		h.emitter.Emit(c.Request.Context(), &domain.Event{
 			ID:         uuid.NewString(),
 			Type:       domain.EventUserRegistered,
 			OccurredAt: time.Now().UTC(),

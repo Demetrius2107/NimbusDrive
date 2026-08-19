@@ -18,6 +18,10 @@ type Event struct {
 	ActorID int64 `json:"actor_id"`
 	// Payload 类型化载荷，各事件自定义字段。值须为可 JSON 序列化类型。
 	Payload map[string]any `json:"payload"`
+	// TraceContext W3C trace context（traceparent+tracestate），跨 Redis Streams 传播追踪上下文。
+	// Emitter 在 Emit 时从 ctx 提取注入；Consumer 解码后提取，起 consumer span 续接 trace。
+	// 无 active span 时为 nil（omitempty，不占 Stream 字段）。
+	TraceContext map[string]string `json:"trace_context,omitempty"`
 }
 
 // 事件类型常量。命名约定：{聚合}.{动作}，点分。

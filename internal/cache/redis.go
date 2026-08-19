@@ -86,10 +86,12 @@ func (r *Redis) IncrShareAccess(ctx context.Context, id string) error {
 
 // ShareDownloadToken 是分享下载能力令牌的载荷：APIServer 签发、TransferServer 兑换。
 // 令牌只证明"曾被授权"，不携带文件内容；兑换时 TransferServer 再查 files 表补全元信息。
+// TraceParent 携带 W3C traceparent 文本，使 TransferServer 兑换时续接 APIServer 的 trace。
 type ShareDownloadToken struct {
-	ShareID   string `json:"share_id"`
-	FileID    int64  `json:"file_id"`
-	IssuedAt  int64  `json:"issued_at"` // unix 秒
+	ShareID     string `json:"share_id"`
+	FileID      int64  `json:"file_id"`
+	IssuedAt    int64  `json:"issued_at"`     // unix 秒
+	TraceParent string `json:"trace_parent,omitempty"` // W3C traceparent，跨客户端中介边界传播
 }
 
 // shareDownloadTokenKey 是令牌在 Redis 中的键。
@@ -104,7 +106,8 @@ return v
 
 // IssueShareDownloadToken 签发一次性下载令牌：32 字节随机 → hex(64 字符)。
 // 令牌存 Redis，TTL 由调用方控制（建议 5 min）。返回令牌字符串。
-func (r *Redis) IssueShareDownloadToken(ctx context.Context, shareID string, fileID int64, ttl time.Duration) (string, error) {
+// traceParent 为 W3C traceparent 文本，由调用方从 ctx 提取，使兑换端续接 trace。
+func (r *Redis) IssueShareDownloadToken(ctx context.Context, shareID string, fileID int64, ttl time.Duration, traceParent string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("read random: %w", err)
@@ -112,9 +115,10 @@ func (r *Redis) IssueShareDownloadToken(ctx context.Context, shareID string, fil
 	token := hex.EncodeToString(b)
 
 	payload, err := json.Marshal(ShareDownloadToken{
-		ShareID:  shareID,
-		FileID:   fileID,
-		IssuedAt: time.Now().Unix(),
+		ShareID:     shareID,
+		FileID:      fileID,
+		IssuedAt:    time.Now().Unix(),
+		TraceParent: traceParent,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal token: %w", err)

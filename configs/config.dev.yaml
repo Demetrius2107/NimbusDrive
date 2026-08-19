@@ -64,3 +64,11 @@ event_bus:
   block_ms: 2000
   dlq_prefix: "nimbus:dlq:"
   stream_max_len: 10000
+
+# 分布式追踪（OpenTelemetry）。stdout=写 stderr（开发期零依赖）；otlp=推本地 collector。
+# 切 OTLP 时改 exporter: otlp 并起 Jaeger/Tempo，不改代码。
+observability:
+  exporter: stdout
+  otlp_endpoint: localhost:4317
+  service_name: ""
+  sample_ratio: 1.0

@@ -11,14 +11,15 @@ import (
 
 // Config 是全局配置根。
 type Config struct {
-	App       AppConfig       `mapstructure:"app"`
-	APIServer ServerConfig    `mapstructure:"api_server"`
-	Transfer  ServerConfig    `mapstructure:"transfer_server"`
-	Postgres  PostgresConfig  `mapstructure:"postgres"`
-	Redis     RedisConfig     `mapstructure:"redis"`
-	MinIO     MinIOConfig     `mapstructure:"minio"`
-	JWT       JWTConfig       `mapstructure:"jwt"`
-	EventBus  EventBusConfig  `mapstructure:"event_bus"`
+	App            AppConfig            `mapstructure:"app"`
+	APIServer      ServerConfig         `mapstructure:"api_server"`
+	Transfer       ServerConfig         `mapstructure:"transfer_server"`
+	Postgres       PostgresConfig       `mapstructure:"postgres"`
+	Redis          RedisConfig          `mapstructure:"redis"`
+	MinIO          MinIOConfig          `mapstructure:"minio"`
+	JWT            JWTConfig            `mapstructure:"jwt"`
+	EventBus       EventBusConfig       `mapstructure:"event_bus"`
+	Observability  ObservabilityConfig  `mapstructure:"observability"`
 }
 
 type AppConfig struct {
@@ -103,6 +104,18 @@ type EventBusConfig struct {
 	StreamMaxLen  int64  `mapstructure:"stream_max_len"`  // 每条 stream 近似上限（XADD MAXLEN ~）
 }
 
+// ObservabilityConfig 描述分布式追踪（OpenTelemetry）参数。
+type ObservabilityConfig struct {
+	// Exporter trace 导出方式：stdout（默认，写 stderr）| otlp（gRPC 推 collector）| none（no-op 降级）。
+	Exporter string `mapstructure:"exporter"`
+	// OTLPEndpoint OTLP gRPC 端点，如 localhost:4317。仅 exporter=otlp 时生效。
+	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
+	// ServiceName 覆盖默认服务名（默认按二进制：api/transfer）。
+	ServiceName string `mapstructure:"service_name"`
+	// SampleRatio 采样率 0-1，1.0=全采样。用 ParentBased(TraceIDRatioBased) 策略。
+	SampleRatio float64 `mapstructure:"sample_ratio"`
+}
+
 // Load 从 configs/ 目录读取指定名称的 yaml，并叠加同名环境变量覆盖。
 // name 不含扩展名，如 "config.dev"。
 func Load(name string) (*Config, error) {
@@ -129,6 +142,11 @@ func Load(name string) (*Config, error) {
 	// MinIO 预签名下载默认值
 	v.SetDefault("minio.presign_expire_sec", 3600)
 	v.SetDefault("minio.share_download_token_ttl_sec", 300)
+
+	// 可观测性默认值（stdout 导出 + 全采样，开发期零外部依赖）
+	v.SetDefault("observability.exporter", "stdout")
+	v.SetDefault("observability.otlp_endpoint", "localhost:4317")
+	v.SetDefault("observability.sample_ratio", 1.0)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", name, err)
