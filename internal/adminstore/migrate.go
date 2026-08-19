@@ -12,6 +12,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 		&User{},
 		&OperationLog{},
 		&File{},
+		&QuotaPeriod{},
 	); err != nil {
 		return fmt.Errorf("admin auto-migrate: %w", err)
 	}
