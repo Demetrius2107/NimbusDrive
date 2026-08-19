@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -12,21 +13,32 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/adminstore"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
+	"github.com/Demetrius2107/NimbusDrive/internal/quota"
+	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
+// quotaNotifier 解耦 AdminHandler 与 quota 包实现，便于单测 mock。
+// targetUserID=0 表示广播。返回分配的版本号。
+type quotaNotifier interface {
+	NotifyChange(ctx context.Context, targetUserID int64, changeType quota.ChangeType, payload map[string]any) (int64, error)
+}
+
 // AdminHandler 处理管理后台接口。
 type AdminHandler struct {
-	users *adminstore.UserRepo
-	files *adminstore.FileRepo
-	logs  *adminstore.LogQueryRepo
-	la    *adminstore.LogAggregator
+	users    *adminstore.UserRepo
+	files    *adminstore.FileRepo
+	logs     *adminstore.LogQueryRepo
+	la       *adminstore.LogAggregator
+	notifier quotaNotifier
 }
 
 // NewAdminHandler 构造 AdminHandler。
-func NewAdminHandler(users *adminstore.UserRepo, files *adminstore.FileRepo, logs *adminstore.LogQueryRepo, la *adminstore.LogAggregator) *AdminHandler {
-	return &AdminHandler{users: users, files: files, logs: logs, la: la}
+// notifier 可为 nil（Redis 不可用时降级，仅不推送，不影响管理操作本身）。
+func NewAdminHandler(users *adminstore.UserRepo, files *adminstore.FileRepo, logs *adminstore.LogQueryRepo, la *adminstore.LogAggregator, notifier quotaNotifier) *AdminHandler {
+	return &AdminHandler{users: users, files: files, logs: logs, la: la, notifier: notifier}
 }
 
 // --- 用户管理 ---
@@ -129,7 +141,49 @@ func (h *AdminHandler) UpdateUserQuota(c *gin.Context) {
 	detail, _ := json.Marshal(map[string]int64{"old": oldQuota, "new": req.Quota})
 	h.logAction(c, "admin.user.quota", strPtr("user"), &targetID, detail)
 
+	// 推送配额变更给目标用户的在线客户端（nil 时降级跳过）。
+	h.notifyChange(c.Request.Context(), userID, quota.ChangeUserQuota, map[string]any{
+		"storage_quota": req.Quota,
+		"old":           oldQuota,
+	})
+
 	c.JSON(http.StatusOK, gin.H{"code": string(domain.CodeOK), "message": "ok"})
+}
+
+// ResetAllQuotaRequest 批量重置配额请求体。
+type ResetAllQuotaRequest struct {
+	Quota int64 `json:"quota" binding:"required,min=0"`
+}
+
+// ResetAllQuota POST /api/v1/admin/users/quota/reset — 批量重置所有普通用户存储配额。
+// 场景：管理员一键把所有用户配额重置为指定值，客户端经 SSE 实时收到 reset_all 广播。
+func (h *AdminHandler) ResetAllQuota(c *gin.Context) {
+	var req ResetAllQuotaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortBadRequest(c, "quota 必须为非负整数")
+		return
+	}
+
+	affected, err := h.users.ResetAllQuota(c.Request.Context(), req.Quota)
+	if err != nil {
+		abortInternal(c, "批量重置配额失败")
+		return
+	}
+
+	detail, _ := json.Marshal(map[string]any{"quota": req.Quota, "affected": affected})
+	h.logAction(c, "admin.user.quota.reset_all", strPtr("user"), nil, detail)
+
+	// 广播 reset_all：所有在线客户端收到后重新拉取自身配额。
+	h.notifyChange(c.Request.Context(), 0, quota.ChangeResetAll, map[string]any{
+		"storage_quota": req.Quota,
+		"affected":      affected,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    string(domain.CodeOK),
+		"message": "ok",
+		"data":    gin.H{"affected": affected, "quota": req.Quota},
+	})
 }
 
 // --- 文件审计 ---
@@ -225,6 +279,17 @@ func (h *AdminHandler) logAction(c *gin.Context, action string, targetType *stri
 // errIsNotFound 判断 GORM 是否为记录未找到错误。
 func errIsNotFound(err error) bool {
 	return err == gorm.ErrRecordNotFound
+}
+
+// notifyChange 推送配额变更。非阻塞：推送失败只告警，不影响管理操作结果。
+// 配额变更已落库，客户端即便没收到推送，下次刷新 /auth/me 或轮询也能拿到最新值。
+func (h *AdminHandler) notifyChange(ctx context.Context, targetUserID int64, changeType quota.ChangeType, payload map[string]any) {
+	if h.notifier == nil {
+		return
+	}
+	if _, err := h.notifier.NotifyChange(ctx, targetUserID, changeType, payload); err != nil {
+		logger.L.Warn("notify quota change failed", zap.Error(err))
+	}
 }
 
 func strPtr(s string) *string { return &s }
