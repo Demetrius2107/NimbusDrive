@@ -403,6 +403,10 @@ func (h *UploadHandler) CancelUpload(ctx context.Context, c *app.RequestContext)
 // instantUpload 秒传：复用物理存储，新建 files 记录 + ref_count++ + 配额扣减。
 // 返回新创建的 file_id。
 func (h *UploadHandler) instantUpload(ctx context.Context, userID int64, req CheckHashRequest, storagePath string) (int64, error) {
+	// 传输配额预检（秒传不经 precheckQuota，需单独检查）。
+	if err := h.repos.Quotas.CheckUpload(ctx, userID, req.Size); err != nil {
+		return 0, err
+	}
 	var fileID int64
 	err := h.withTx(ctx, func(tx *sqlx.Tx) error {
 		// ref_count++（原子）。
@@ -471,6 +475,7 @@ func (h *UploadHandler) completeTransaction(ctx context.Context, session *domain
 }
 
 // precheckQuota 配额预检（非原子，仅避免无意义创建会话；真正扣减在 complete 事务）。
+// 同时检查存储配额（users 表）与月度传输配额（quota_periods 表）。
 func (h *UploadHandler) precheckQuota(ctx context.Context, userID, size int64) error {
 	var quota, used int64
 	err := h.db.QueryRowxContext(ctx,
@@ -480,6 +485,10 @@ func (h *UploadHandler) precheckQuota(ctx context.Context, userID, size int64) e
 	}
 	if used+size > quota {
 		return domain.ErrQuotaExceeded
+	}
+	// 月度上传传输配额检查（只检查不扣，完成时由消费者扣）
+	if err := h.repos.Quotas.CheckUpload(ctx, userID, size); err != nil {
+		return err
 	}
 	return nil
 }

@@ -101,6 +101,17 @@ func (h *DownloadHandler) Presign(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 月度下载传输配额扣减（按文件大小计量；预签名场景无法精确计量实际传输字节）。
+	userID := middleware.HertzUserID(c)
+	if err := h.repos.Quotas.IncrDownload(ctx, userID, file.Size); err != nil {
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			hertzJSON(c, consts.StatusRequestEntityTooLarge, domain.CodeQuotaExceeded, "月度下载配额不足", nil)
+			return
+		}
+		hertzInternal(c, "扣减下载配额失败")
+		return
+	}
+
 	rawURL, err := h.mc.PresignedDownloadURL(ctx, *file.StoragePath, h.presignExpireSec, file.Name, file.MimeType)
 	if err != nil {
 		hertzInternal(c, "签发下载链接失败")

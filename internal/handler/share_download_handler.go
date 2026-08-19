@@ -33,17 +33,23 @@ type presigner interface {
 	PresignedDownloadURL(ctx context.Context, storagePath string, expire int, filename, mimeType string) (string, error)
 }
 
+// downloadQuotaChecker 抽象下载配额扣减，便于单测 mock（避免依赖 *store.QuotaRepo）。
+type downloadQuotaChecker interface {
+	IncrDownload(ctx context.Context, userID, delta int64) error
+}
+
 // ShareDownloadHandler 处理 TransferServer 的分享下载兑换端点（公开，无 JWT）。
 type ShareDownloadHandler struct {
 	files            fileGetter
 	mc               presigner
 	rc               tokenRedeemer
+	quotas           downloadQuotaChecker
 	presignExpireSec int
 }
 
 // NewShareDownloadHandler 构造 ShareDownloadHandler。
 func NewShareDownloadHandler(repos *store.Repositories, mc *storage.MinIO, rc *cache.Redis, presignExpireSec int) *ShareDownloadHandler {
-	return &ShareDownloadHandler{files: repos.Files, mc: mc, rc: rc, presignExpireSec: presignExpireSec}
+	return &ShareDownloadHandler{files: repos.Files, mc: mc, rc: rc, quotas: repos.Quotas, presignExpireSec: presignExpireSec}
 }
 
 // Redeem GET /api/v1/s/download/:token（公开，无 JWT）
@@ -88,6 +94,18 @@ func (h *ShareDownloadHandler) Redeem(ctx context.Context, c *app.RequestContext
 	if file.DeletedAt != nil || file.IsFolder || file.Status != domain.FileStatusCompleted || file.StoragePath == nil || *file.StoragePath == "" {
 		hertzNotFound(c, "文件不可用")
 		return
+	}
+
+	// 月度下载传输配额扣减，计入文件所有者（分享下载的 actor 不是所有者）。
+	if h.quotas != nil {
+		if err := h.quotas.IncrDownload(ctx, file.UserID, file.Size); err != nil {
+			if errors.Is(err, domain.ErrQuotaExceeded) {
+				hertzJSON(c, consts.StatusRequestEntityTooLarge, domain.CodeQuotaExceeded, "月度下载配额不足", nil)
+				return
+			}
+			hertzInternal(c, "扣减下载配额失败")
+			return
+		}
 	}
 
 	rawURL, err := h.mc.PresignedDownloadURL(ctx, *file.StoragePath, h.presignExpireSec, file.Name, file.MimeType)
