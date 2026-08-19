@@ -2,6 +2,8 @@ package quota
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -39,5 +41,37 @@ func TestChangeType_Values(t *testing.T) {
 		if string(ct) != want {
 			t.Errorf("change type %q = %q, want %q", ct, string(ct), want)
 		}
+	}
+}
+
+// TestQuotaChangeEvent_TraceParent_JSON 验证 TraceParent 字段 JSON 序列化/反序列化往返，
+// 以及 omitempty（空串时不输出字段）。
+func TestQuotaChangeEvent_TraceParent_JSON(t *testing.T) {
+	// 有 traceparent
+	evt := QuotaChangeEvent{
+		Version:     1,
+		Type:        ChangeResetAll,
+		TraceParent: "00-abc-def-01",
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "trace_parent") {
+		t.Errorf("trace_parent should be present in JSON: %s", data)
+	}
+	var decoded QuotaChangeEvent
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.TraceParent != evt.TraceParent {
+		t.Errorf("TraceParent: got %q want %q", decoded.TraceParent, evt.TraceParent)
+	}
+
+	// 空 traceparent → omitempty
+	evt2 := QuotaChangeEvent{Version: 2, Type: ChangeUserQuota}
+	data2, _ := json.Marshal(evt2)
+	if strings.Contains(string(data2), "trace_parent") {
+		t.Errorf("trace_parent should be omitted when empty: %s", data2)
 	}
 }

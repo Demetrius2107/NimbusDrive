@@ -126,3 +126,70 @@ func TestDecodeEvent_InvalidPayload(t *testing.T) {
 		t.Fatal("expected error for invalid payload json")
 	}
 }
+
+// TestEncodeDecode_TraceContext 验证 trace_context 字段编解码往返。
+func TestEncodeDecode_TraceContext(t *testing.T) {
+	orig := &domain.Event{
+		ID:         "evt-trace",
+		Type:       domain.EventFileUploaded,
+		OccurredAt: time.Now().UTC(),
+		ActorID:    1,
+		Payload:    map[string]any{"size": float64(100)},
+		TraceContext: map[string]string{
+			"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			"tracestate":  "key=value",
+		},
+	}
+
+	values, err := encodeEvent(orig)
+	if err != nil {
+		t.Fatalf("encodeEvent: %v", err)
+	}
+	// trace_context 字段应存在
+	if _, ok := values[streamFieldTraceContext]; !ok {
+		t.Fatal("trace_context field missing from encoded values")
+	}
+
+	decoded, err := decodeEvent(values)
+	if err != nil {
+		t.Fatalf("decodeEvent: %v", err)
+	}
+	if decoded.TraceContext == nil {
+		t.Fatal("decoded TraceContext should not be nil")
+	}
+	if got, want := decoded.TraceContext["traceparent"], orig.TraceContext["traceparent"]; got != want {
+		t.Errorf("traceparent: got %q want %q", got, want)
+	}
+	if got, want := decoded.TraceContext["tracestate"], orig.TraceContext["tracestate"]; got != want {
+		t.Errorf("tracestate: got %q want %q", got, want)
+	}
+}
+
+// TestEncodeDecode_NoTraceContext_BackwardCompat 验证无 trace_context 的旧消息可正常解码。
+func TestEncodeDecode_NoTraceContext_BackwardCompat(t *testing.T) {
+	orig := &domain.Event{
+		ID:         "evt-old",
+		Type:       domain.EventFileUploaded,
+		OccurredAt: time.Now().UTC(),
+		ActorID:    1,
+		Payload:    map[string]any{"size": float64(100)},
+		// TraceContext 为 nil（旧消息无此字段）
+	}
+
+	values, err := encodeEvent(orig)
+	if err != nil {
+		t.Fatalf("encodeEvent: %v", err)
+	}
+	// 不应写 trace_context 字段
+	if _, ok := values[streamFieldTraceContext]; ok {
+		t.Fatal("trace_context field should not be present for nil TraceContext")
+	}
+
+	decoded, err := decodeEvent(values)
+	if err != nil {
+		t.Fatalf("decodeEvent: %v", err)
+	}
+	if decoded.TraceContext != nil {
+		t.Errorf("decoded TraceContext should be nil for old message, got %v", decoded.TraceContext)
+	}
+}
