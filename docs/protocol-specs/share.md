@@ -62,9 +62,21 @@
 5. 原子 `shares.IncrAccess`（到达 `max_access_count` 返回 `ErrForbidden` → 403）。
 6. 缓存 `IncrShareAccess`。
 
-**响应**：`{access_allowed:true, access_count_remaining:*int, expires_in:*int64, file_id}`。
+**响应**：`{access_allowed:true, access_count_remaining:*int, expires_in:*int64, file_id, download_token, download_url}`。
+
+校验通过后签发**分享下载能力令牌**（capability token）：
+- `download_token`：64 字符 hex（32 随机字节），存 Redis `share:dl:{token}`，TTL 5 min（`share_download_token_ttl_sec`）。
+- `download_url`：`/api/v1/s/download/{token}`（TransferServer 兑换路径，见 download.md 第 4 节）。
+- 令牌单次消费（Lua GET+DEL），防重放。客户端凭令牌兑换预签名直连 MinIO 的 URL。
+- Redis 不可用时降级：响应不带 `download_token`/`download_url`（前端降级提示），不阻塞 validate 主流程。
 
 **状态码**：200 / 401（密码错/缺）/ 403（耗尽/过期）/ 404 / 500。
+
+## 6. 分享下载兑换 — GET /s/download/:token
+
+> 由 TransferServer 承载（Hertz，公开端点无 JWT）。详见《下载协议》第 4 节。
+
+凭 `download_token` 兑换预签名直连 MinIO 的 URL。授权决策在 APIServer（本节 validate），资源访问在 TransferServer——capability-based security，令牌即授权凭证，TransferServer 不需要懂分享语义。
 
 ## 关键实现细节
 

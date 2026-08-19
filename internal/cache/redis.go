@@ -3,6 +3,9 @@ package cache
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -77,4 +80,68 @@ func (r *Redis) IncrShareAccess(ctx context.Context, id string) error {
 		return fmt.Errorf("hincr share access: %w", err)
 	}
 	return nil
+}
+
+// --- 分享下载能力令牌（capability token）---
+
+// ShareDownloadToken 是分享下载能力令牌的载荷：APIServer 签发、TransferServer 兑换。
+// 令牌只证明"曾被授权"，不携带文件内容；兑换时 TransferServer 再查 files 表补全元信息。
+type ShareDownloadToken struct {
+	ShareID   string `json:"share_id"`
+	FileID    int64  `json:"file_id"`
+	IssuedAt  int64  `json:"issued_at"` // unix 秒
+}
+
+// shareDownloadTokenKey 是令牌在 Redis 中的键。
+func shareDownloadTokenKey(token string) string { return "share:dl:" + token }
+
+// redeemShareDownloadTokenScript 原子 GET + DEL：单次消费，防并发重放。
+var redeemShareDownloadTokenScript = redis.NewScript(`
+local v = redis.call('GET', KEYS[1])
+if v then redis.call('DEL', KEYS[1]) end
+return v
+`)
+
+// IssueShareDownloadToken 签发一次性下载令牌：32 字节随机 → hex(64 字符)。
+// 令牌存 Redis，TTL 由调用方控制（建议 5 min）。返回令牌字符串。
+func (r *Redis) IssueShareDownloadToken(ctx context.Context, shareID string, fileID int64, ttl time.Duration) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random: %w", err)
+	}
+	token := hex.EncodeToString(b)
+
+	payload, err := json.Marshal(ShareDownloadToken{
+		ShareID:  shareID,
+		FileID:   fileID,
+		IssuedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal token: %w", err)
+	}
+
+	if err := r.Client.Set(ctx, shareDownloadTokenKey(token), payload, ttl).Err(); err != nil {
+		return "", fmt.Errorf("set share download token: %w", err)
+	}
+	return token, nil
+}
+
+// RedeemShareDownloadToken 兑换令牌：原子 GET + DEL，单次消费。
+// 返回令牌载荷与是否命中。未命中/已过期/已消费 → ok=false, nil err。
+func (r *Redis) RedeemShareDownloadToken(ctx context.Context, token string) (ShareDownloadToken, bool, error) {
+	var tok ShareDownloadToken
+	v, err := redeemShareDownloadTokenScript.Run(ctx, r.Client, []string{shareDownloadTokenKey(token)}).Text()
+	if err != nil {
+		if err == redis.Nil {
+			return tok, false, nil
+		}
+		return tok, false, fmt.Errorf("redeem share download token: %w", err)
+	}
+	if v == "" {
+		return tok, false, nil
+	}
+	if err := json.Unmarshal([]byte(v), &tok); err != nil {
+		return tok, false, fmt.Errorf("unmarshal token: %w", err)
+	}
+	return tok, true, nil
 }

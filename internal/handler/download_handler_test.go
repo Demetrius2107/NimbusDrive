@@ -2,6 +2,8 @@ package handler
 
 import (
 	"testing"
+
+	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 )
 
 // TestParseRangeFromStart 验证 bytes=0- 格式（从 start 到末尾）。
@@ -79,7 +81,7 @@ func TestParseRangeZeroSize(t *testing.T) {
 
 // TestBuildContentDispositionASCII 验证 ASCII 文件名用 filename="..."。
 func TestBuildContentDispositionASCII(t *testing.T) {
-	got := buildContentDisposition("report.pdf")
+	got := storage.BuildContentDisposition("report.pdf")
 	want := `attachment; filename="report.pdf"`
 	if got != want {
 		t.Errorf("ASCII: got %q, want %q", got, want)
@@ -88,7 +90,7 @@ func TestBuildContentDispositionASCII(t *testing.T) {
 
 // TestBuildContentDispositionNonASCII 验证非 ASCII 文件名用 RFC 5987 编码。
 func TestBuildContentDispositionNonASCII(t *testing.T) {
-	got := buildContentDisposition("报告.pdf")
+	got := storage.BuildContentDisposition("报告.pdf")
 	// 应包含 filename*=UTF-8'' 前缀
 	prefix := `attachment; filename*=UTF-8''`
 	if len(got) <= len(prefix) || got[:len(prefix)] != prefix {
@@ -102,13 +104,13 @@ func TestBuildContentDispositionNonASCII(t *testing.T) {
 
 // TestIsASCII 验证 ASCII 判断。
 func TestIsASCII(t *testing.T) {
-	if !isASCII("hello.txt") {
+	if !storage.IsASCII("hello.txt") {
 		t.Error("纯 ASCII 应返回 true")
 	}
-	if isASCII("报告.txt") {
+	if storage.IsASCII("报告.txt") {
 		t.Error("含中文应返回 false")
 	}
-	if !isASCII("") {
+	if !storage.IsASCII("") {
 		t.Error("空字符串应返回 true")
 	}
 }

@@ -68,13 +68,21 @@ type RedisConfig struct {
 func (r RedisConfig) Addr() string { return fmt.Sprintf("%s:%d", r.Host, r.Port) }
 
 type MinIOConfig struct {
-	Endpoint        string `mapstructure:"endpoint"`
-	AccessKey       string `mapstructure:"access_key"`
-	SecretKey       string `mapstructure:"secret_key"`
-	Bucket          string `mapstructure:"bucket"`
-	UseSSL          bool   `mapstructure:"use_ssl"`
-	Region          string `mapstructure:"region"`
-	PresignExpireSec int   `mapstructure:"presign_expire_sec"`
+	Endpoint         string `mapstructure:"endpoint"`
+	AccessKey        string `mapstructure:"access_key"`
+	SecretKey        string `mapstructure:"secret_key"`
+	Bucket           string `mapstructure:"bucket"`
+	UseSSL           bool   `mapstructure:"use_ssl"`
+	Region           string `mapstructure:"region"`
+	PresignExpireSec int    `mapstructure:"presign_expire_sec"`
+	// PublicEndpoint 是客户端可达的 MinIO 端点，用于签发预签名下载 URL。
+	// 内部上传走 Endpoint（内网），预签名 URL 必须用客户端可达端点。
+	// 为空时回退到 Endpoint（dev 环境客户端直连内网 MinIO）。
+	PublicEndpoint string `mapstructure:"public_endpoint"`
+	PublicUseSSL   bool   `mapstructure:"public_use_ssl"`
+	// ShareDownloadTokenTTLSec 是分享下载能力令牌的 TTL（秒）。
+	// 令牌单次消费，TTL 仅约束未兑换令牌的存活时间。
+	ShareDownloadTokenTTLSec int `mapstructure:"share_download_token_ttl_sec"`
 }
 
 type JWTConfig struct {
@@ -117,6 +125,10 @@ func Load(name string) (*Config, error) {
 	v.SetDefault("event_bus.block_ms", 2000)
 	v.SetDefault("event_bus.dlq_prefix", "nimbus:dlq:")
 	v.SetDefault("event_bus.stream_max_len", 10000)
+
+	// MinIO 预签名下载默认值
+	v.SetDefault("minio.presign_expire_sec", 3600)
+	v.SetDefault("minio.share_download_token_ttl_sec", 300)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", name, err)

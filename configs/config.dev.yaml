@@ -44,6 +44,11 @@ minio:
   use_ssl: false
   region: us-east-1
   presign_expire_sec: 3600
+  # 公网端点：客户端直连 MinIO 拉预签名 URL 用。dev 留空回退到 endpoint。
+  public_endpoint: ""
+  public_use_ssl: false
+  # 分享下载能力令牌 TTL（秒），单次消费。
+  share_download_token_ttl_sec: 300
 
 jwt:
   secret: change-me-in-prod

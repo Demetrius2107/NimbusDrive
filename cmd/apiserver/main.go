@@ -135,7 +135,7 @@ func main() {
 	} else {
 		logger.L.Warn("event bus disabled: redis unavailable")
 	}
-	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la)
+	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la, cfg.MinIO)
 
 	srv := &http.Server{
 		Addr:         cfg.APIServer.Addr(),
@@ -163,7 +163,7 @@ func main() {
 	logger.L.Info("apiserver stopped")
 }
 
-func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator) {
+func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator, minioCfg config.MinIOConfig) {
 	r.GET("/healthz", healthz(st, rc))
 
 	v1 := r.Group("/api/v1")
@@ -203,7 +203,7 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 			}
 
 			// 分享模块：创建挂在 /files/:id/share，管理挂在 /shares，公开访问挂在 /s
-			sh := handler.NewShareHandler(st.Repos().Shares, st.Repos().Files, rc, st.DB, emitter)
+			sh := handler.NewShareHandler(st.Repos().Shares, st.Repos().Files, rc, st.DB, emitter, time.Duration(minioCfg.ShareDownloadTokenTTLSec)*time.Second)
 			filesGrp.POST("/:id/share", middleware.GinContract(reg, contract.ShareCreate), sh.CreateShare)
 			sharesGrp := v1.Group("/shares", middleware.GinJWTAuth(jwtMgr))
 			{

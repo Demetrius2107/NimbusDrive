@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -13,14 +15,18 @@ import (
 
 // MinIO 封装 minio 客户端与 bucket 信息。
 // Client 用于高层 API（PutObject/GetObject），Core 用于底层分块上传控制。
+// PresignClient 用客户端可达的公网端点构造，仅用于签发预签名下载 URL；
+// 内部上传/下载走 Client（内网端点）。两者共享同一 bucket 与凭证。
 type MinIO struct {
-	Client *minio.Client
-	Core   *minio.Core
-	Bucket string
+	Client       *minio.Client
+	Core         *minio.Core
+	PresignClient *minio.Client
+	Bucket       string
 }
 
 // New 创建 MinIO 客户端。MVP 默认单桶，按 hash 前缀分目录存对象。
-func New(ctx context.Context, endpoint, accessKey, secretKey, bucket, region string, useSSL bool) (*MinIO, error) {
+// publicEndpoint 非空时构造独立的 PresignClient；为空则 PresignClient 复用 Client。
+func New(ctx context.Context, endpoint, accessKey, secretKey, bucket, region string, useSSL bool, publicEndpoint string, publicUseSSL bool) (*MinIO, error) {
 	cli, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
@@ -40,10 +46,25 @@ func New(ctx context.Context, endpoint, accessKey, secretKey, bucket, region str
 			return nil, fmt.Errorf("make bucket %s: %w", bucket, err)
 		}
 	}
+
+	// 预签名客户端：用公网端点签发客户端可达的 URL。公网空则复用内网 client。
+	presignCli := cli
+	if publicEndpoint != "" {
+		presignCli, err = minio.New(publicEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+			Secure: publicUseSSL,
+			Region: region,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create presign minio client: %w", err)
+		}
+	}
+
 	return &MinIO{
-		Client: cli,
-		Core:   &minio.Core{Client: cli},
-		Bucket: bucket,
+		Client:        cli,
+		Core:          &minio.Core{Client: cli},
+		PresignClient: presignCli,
+		Bucket:        bucket,
 	}, nil
 }
 
@@ -139,4 +160,55 @@ func (m *MinIO) RemoveObject(ctx context.Context, objectKey string) error {
 		return fmt.Errorf("remove object: %w", err)
 	}
 	return nil
+}
+
+// --- 预签名下载 ---
+
+// PresignedDownloadURL 签发一次性直连 MinIO 的下载 URL。
+// 通过 response-content-type / response-content-disposition 查询参数覆盖响应头，
+// 让浏览器以正确文件名与 MIME 保存，无需服务端代理字节流。
+// 预签名 URL 的签名覆盖 query 参数，不覆盖 Range 头——客户端可对同一 URL
+// 发多次 Range 请求做分块下载，无需每块单独签。
+func (m *MinIO) PresignedDownloadURL(ctx context.Context, storagePath string, expire int, filename, mimeType string) (string, error) {
+	reqParams := url.Values{}
+	if mimeType != "" {
+		reqParams.Set("response-content-type", mimeType)
+	}
+	if filename != "" {
+		reqParams.Set("response-content-disposition", BuildContentDisposition(filename))
+	}
+	u, err := m.PresignClient.PresignedGetObject(ctx, m.Bucket, storagePath, toDuration(expire), reqParams)
+	if err != nil {
+		return "", fmt.Errorf("presigned get: %w", err)
+	}
+	return u.String(), nil
+}
+
+// toDuration 把秒转 time.Duration，<=0 时回退到 1 小时。
+func toDuration(seconds int) time.Duration {
+	if seconds <= 0 {
+		seconds = 3600
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// BuildContentDisposition 构造 Content-Disposition 头。
+// 文件名纯 ASCII 用 filename="..."；含非 ASCII 用 RFC 5987 的 filename*=UTF-8''...
+// 预签名 URL 的 response-content-disposition 与流式下载响应头共用此构造。
+func BuildContentDisposition(filename string) string {
+	if IsASCII(filename) {
+		return fmt.Sprintf(`attachment; filename="%s"`, filename)
+	}
+	encoded := url.PathEscape(filename)
+	return fmt.Sprintf(`attachment; filename*=UTF-8''%s`, encoded)
+}
+
+// IsASCII 判断字符串是否全部为 ASCII 字符。
+func IsASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
 }
