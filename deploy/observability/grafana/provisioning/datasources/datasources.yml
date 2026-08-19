@@ -1,0 +1,44 @@
+# Grafana 数据源自动 provision。
+# 三支柱联动配置：
+#   - Prometheus: exemplar traceIdLabel=trace_id → 点 exemplar 跳 Tempo
+#   - Tempo: tracesToLogsV2 按 trace_id 查 Loki 日志
+#   - Loki: 标准 datasource
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      # exemplar 关联：Prometheus 指标的 exemplar 带 trace_id，点击跳转到 Tempo
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # trace → log 联动：从 Tempo trace 跳 Loki 查同 trace_id 日志
+      tracesToLogsV2:
+        customQuery: true
+        query: '{$${__labels}} | json | trace_id="$${__trace.traceId}"'
+        datasourceUid: loki
+        spanStartTimeShift: 1h
+        spanEndTimeShift: 1h
+      # trace → metric 联动（如有 span metric）
+      nodeGraph:
+        enabled: true
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000

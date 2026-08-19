@@ -10,6 +10,7 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
@@ -79,6 +80,10 @@ func (h *SSEHandler) Stream(c *gin.Context) {
 	pubsub := h.notifier.client.Subscribe(ctx, ChannelQuotaChanges)
 	defer func() { _ = pubsub.Close() }()
 	msgCh := pubsub.Channel()
+	// 活跃 SSE 连接 gauge：订阅成功后 +1，return 时 -1（覆盖三个退出路径：
+	// pubsub 关闭 / ctx.Done 客户端断开 / panic）。
+	metrics.Default().SSEActiveConnections.Inc()
+	defer metrics.Default().SSEActiveConnections.Dec()
 
 	// 4. 心跳 + 事件循环。
 	ticker := time.NewTicker(heartbeatInterval)
@@ -111,6 +116,7 @@ func (h *SSEHandler) Stream(c *gin.Context) {
 				Id:    strconv.FormatInt(evt.Version, 10),
 				Data:  evt,
 			})
+			metrics.Default().SSEEventsPushed.Inc()
 			span.End()
 			return true
 		case <-ticker.C:

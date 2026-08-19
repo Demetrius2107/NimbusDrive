@@ -13,6 +13,7 @@ import (
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
@@ -156,6 +157,9 @@ func (h *UploadHandler) CheckHash(ctx context.Context, c *app.RequestContext) {
 		hertzInternal(c, "创建上传会话失败")
 		return
 	}
+	// 会话创建成功：活跃会话 gauge +1，会话创建计数 +1
+	metrics.Default().UploadActiveSessions.Inc()
+	metrics.Default().UploadSessionsCreated.WithLabelValues("multipart").Inc()
 
 	c.JSON(consts.StatusOK, utils.H{
 		"code":    string(domain.CodeOK),
@@ -229,6 +233,9 @@ func (h *UploadHandler) UploadChunk(ctx context.Context, c *app.RequestContext) 
 		hertzInternal(c, "更新上传进度失败")
 		return
 	}
+	// 分块指标：接收的分块数 + 分块字节数
+	metrics.Default().UploadChunksReceived.WithLabelValues().Inc()
+	metrics.Default().UploadBytes.WithLabelValues("multipart").Add(float64(len(chunk)))
 
 	c.JSON(consts.StatusOK, utils.H{
 		"code":    string(domain.CodeOK),
@@ -344,6 +351,8 @@ func (h *UploadHandler) CompleteUpload(ctx context.Context, c *app.RequestContex
 
 	// 标记会话完成（元数据已落库，会话状态不一致不致命）。
 	_ = h.repos.Uploads.Complete(ctx, sessionID)
+	// 会话结束：活跃会话 gauge -1
+	metrics.Default().UploadActiveSessions.Dec()
 
 	// 事务提交后查 files 表补全 name/parent_id，发射 file.uploaded 事件。
 	var parentID any
@@ -391,6 +400,9 @@ func (h *UploadHandler) CancelUpload(ctx context.Context, c *app.RequestContext)
 	_ = h.mc.AbortMultipartUpload(ctx, objectKey, session.UploadID)
 	_ = h.repos.Uploads.Abort(ctx, sessionID)
 	_ = h.repos.Files.HardDelete(ctx, session.FileID)
+	// 会话取消：活跃会话 gauge -1 + 取消计数 +1
+	metrics.Default().UploadActiveSessions.Dec()
+	metrics.Default().UploadCancellations.Inc()
 
 	c.JSON(consts.StatusOK, utils.H{
 		"code":    string(domain.CodeOK),
@@ -545,6 +557,15 @@ func hertzNotFound(c *app.RequestContext, msg string) {
 // emitFileUploaded 发射 file.uploaded 事件。emitter 为 nil 或 channel 满时静默降级。
 // parentID 传 *int64 或 nil；instant 区分秒传与分块合并。
 func (h *UploadHandler) emitFileUploaded(ctx context.Context, fileID, userID int64, hash string, size int64, storagePath, name string, parentID any, instant bool) {
+	// 业务指标：上传完成数 + 字节数。放在 emitter nil-check 前，
+	// 使 Redis 不可用（emitter 降级）时仍计数。instant → type label。
+	typ := "multipart"
+	if instant {
+		typ = "instant"
+	}
+	metrics.Default().UploadsCompleted.WithLabelValues(typ, "success").Inc()
+	metrics.Default().UploadBytes.WithLabelValues(typ).Add(float64(size))
+
 	if h.emitter == nil {
 		return
 	}

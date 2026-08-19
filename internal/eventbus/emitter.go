@@ -26,6 +26,7 @@ type Emitter struct {
 
 	ch        chan *domain.Event
 	droppedCount uint64 // 原子计数：因 channel 满被丢弃的事件数
+	emittedCount uint64 // 原子计数：成功 XADD 到 Redis Stream 的事件数
 
 	wg   sync.WaitGroup
 	stop chan struct{}
@@ -73,6 +74,12 @@ func (e *Emitter) Emit(ctx context.Context, evt *domain.Event) bool {
 // DroppedCount 返回因背压被丢弃的事件总数。
 func (e *Emitter) DroppedCount() uint64 {
 	return atomic.LoadUint64(&e.droppedCount)
+}
+
+// EmittedCount 返回成功 XADD 到 Redis Stream 的事件总数。
+// 供 metrics.InfraCollector scrape（与 DroppedCount 对比可得事件投递成功率）。
+func (e *Emitter) EmittedCount() uint64 {
+	return atomic.LoadUint64(&e.emittedCount)
 }
 
 // Close 优雅关闭：停止接收新事件 → 排空 channel 中已入队事件 → 等待 goroutine 退出。
@@ -151,6 +158,7 @@ func (e *Emitter) xadd(evt *domain.Event) {
 		atomic.AddUint64(&e.droppedCount, 1)
 		return
 	}
+	atomic.AddUint64(&e.emittedCount, 1)
 }
 
 // StreamName 返回某事件类型对应的 stream 名（供 Consumer 订阅时使用）。

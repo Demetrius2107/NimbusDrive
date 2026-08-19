@@ -17,6 +17,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
@@ -143,6 +144,12 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		abortInternal(c, "创建分享失败")
 		return
 	}
+	// 分享创建指标：has_password label
+	hasPwd := "false"
+	if share.PasswordHash != nil {
+		hasPwd = "true"
+	}
+	metrics.Default().SharesCreated.WithLabelValues(hasPwd).Inc()
 
 	// write-through 写缓存
 	h.cacheShare(c.Request.Context(), share)
@@ -266,6 +273,7 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(*share.PasswordHash), []byte(req.Password)); err != nil {
+			metrics.Default().ShareAccess.WithLabelValues("password_wrong").Inc()
 			abortUnauthorized(c, "密码错误")
 			return
 		}
@@ -274,6 +282,7 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 	// 访问计数 +1（原子，含上限校验）
 	if err := h.shares.IncrAccess(c.Request.Context(), shareID); err != nil {
 		if errors.Is(err, domain.ErrForbidden) {
+			metrics.Default().ShareAccess.WithLabelValues("exhausted").Inc()
 			abortForbidden(c, "访问次数已用尽或分享已失效")
 			return
 		}
@@ -286,6 +295,7 @@ func (h *ShareHandler) ValidateShare(c *gin.Context) {
 
 	// 发射 share.accessed 事件（公开端点，无登录用户，记录访问者 IP）
 	h.emitShareAccessed(c.Request.Context(), shareID, share.FileID, c.ClientIP())
+	metrics.Default().ShareAccess.WithLabelValues("success").Inc()
 
 	// 计算剩余次数与过期秒数
 	var remaining *int

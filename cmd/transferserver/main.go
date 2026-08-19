@@ -17,14 +17,17 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/cloudwego/hertz/pkg/common/utils"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -54,6 +57,11 @@ func main() {
 			_ = tracing.Shutdown(shutdownCtx, tp)
 		}()
 	}
+
+	// Prometheus 指标：紧跟 tracing 初始化（exemplar 需读 span context）。
+	// 变量名用 metricCollector 避免与下方 mc（*storage.MinIO）冲突。
+	metricCollector := metrics.Init(serviceName)
+	defer metrics.Shutdown()
 
 	logger.L.Info("starting transferserver",
 		zap.String("env", cfg.App.Env),
@@ -96,6 +104,11 @@ func main() {
 		logger.L.Warn("event bus disabled: redis unavailable")
 	}
 
+	// 注册 infra 指标 collector（TransferServer 无 consumer/logAggregator，只注入 emitter）。
+	metricCollector.RegisterInfra(metrics.InfraSources{
+		Emitter: emitter,
+	})
+
 	h := server.Default(
 		server.WithHostPorts(cfg.Transfer.Addr()),
 		server.WithReadTimeout(time.Duration(cfg.Transfer.ReadTimeout)*time.Second),
@@ -104,9 +117,26 @@ func main() {
 	h.Use(
 		middleware.HertzRequestID(),
 		middleware.HertzTracer("transferserver"),
+		middleware.HertzMetrics("transfer"),
 		middleware.HertzLogger(),
 		middleware.HertzRecovery(),
 	)
+
+	// /metrics 端点：与 /healthz 同级，无 JWT。EnableOpenMetrics 协商以支持 exemplar。
+	// Hertz 与 net/http 类型不互通，用 common/adaptor 适配 Request/ResponseWriter。
+	if cfg.Observability.MetricsEnabled {
+		metricsHandler := promhttp.HandlerFor(metricCollector.Registry, promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
+		})
+		h.GET(cfg.Observability.MetricsPath, func(ctx context.Context, c *app.RequestContext) {
+			req, err := adaptor.GetCompatRequest(&c.Request)
+			if err != nil {
+				c.AbortWithStatus(consts.StatusInternalServerError)
+				return
+			}
+			metricsHandler.ServeHTTP(adaptor.GetCompatResponseWriter(&c.Response), req)
+		})
+	}
 
 	registerRoutes(h, st, rc, mc, jwtMgr, reg, emitter, cfg.MinIO)
 

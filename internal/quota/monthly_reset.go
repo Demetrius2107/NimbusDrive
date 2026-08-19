@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"go.uber.org/zap"
 )
 
@@ -67,11 +68,13 @@ func (c *MonthlyResetCron) tick(ctx context.Context) {
 	}
 	affected, err := c.reseter.ResetMonthlyAll(ctx, period)
 	if err != nil {
+		metrics.Default().QuotaMonthlyReset.WithLabelValues("error").Inc()
 		logger.L.Error("monthly quota reset failed",
 			zap.String("period", period), zap.Error(err))
 		return
 	}
 	c.period = period
+	metrics.Default().QuotaMonthlyReset.WithLabelValues("success").Inc()
 	logger.L.Info("monthly quota reset done",
 		zap.String("period", period), zap.Int64("affected", affected))
 }

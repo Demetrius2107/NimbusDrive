@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
@@ -34,6 +35,11 @@ type Consumer struct {
 
 	// 幂等去重键 TTL。已处理事件在 TTL 内重复投递会被跳过。
 	idempotencyTTL time.Duration
+
+	// 原子计数器：供 metrics.InfraCollector scrape。无锁读，热路径零开销。
+	processedCount uint64 // 成功处理（ACK）的消息数
+	errorCount     uint64 // 处理失败（handler 返回 err）的消息数
+	dlqCount       uint64 // 移入死信队列的消息数
 
 	wg   sync.WaitGroup
 	stop chan struct{}
@@ -196,6 +202,7 @@ func (c *Consumer) handleMessage(ctx context.Context, stream string, msg redis.X
 	defer span.End()
 
 	if err := c.handler(ctx, evt); err != nil {
+		atomic.AddUint64(&c.errorCount, 1)
 		if deliveryCount >= c.maxRetries {
 			// 超阈值：毒丸消息移入 DLQ，ACK 原消息释放 PEL
 			logger.L.Warn("event handler exceeded max retries, moving to DLQ",
@@ -222,6 +229,7 @@ func (c *Consumer) handleMessage(ctx context.Context, stream string, msg redis.X
 	// 成功：标记已处理 + ACK
 	c.markProcessed(ctx, evt.ID)
 	c.ack(ctx, stream, msg.ID)
+	atomic.AddUint64(&c.processedCount, 1)
 }
 
 // isProcessed 幂等检查：事件 ID 是否已被本消费者处理过。
@@ -286,7 +294,60 @@ func (c *Consumer) moveToDLQ(ctx context.Context, stream string, msg redis.XMess
 			zap.String("origin_id", msg.ID),
 			zap.Error(err),
 		)
+		return
 	}
+	atomic.AddUint64(&c.dlqCount, 1)
+}
+
+// PendingLength 返回某 stream 的消费者组 PEL（pending entries list）长度——
+// 即已投递未 ACK 的消息数，consumer lag 的直接度量。
+// 由 metrics.InfraCollector 在 /metrics 抓取时调用（scrape-time，非后台轮询）。
+// Redis 不可用或 group 不存在时返回 error，collector 侧降级为 0。
+func (c *Consumer) PendingLength(stream string) (int64, error) {
+	if c == nil || c.client == nil {
+		return 0, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := c.client.XPending(ctx, stream, c.group).Result()
+	if err != nil {
+		return 0, err
+	}
+	return res.Count, nil
+}
+
+// Streams 返回该 consumer 订阅的所有 stream（供 collector 遍历 scrape pending）。
+func (c *Consumer) Streams() []string {
+	if c == nil {
+		return nil
+	}
+	out := make([]string, len(c.streams))
+	copy(out, c.streams)
+	return out
+}
+
+// ProcessedCount 返回成功处理（ACK）的消息总数。
+func (c *Consumer) ProcessedCount() uint64 {
+	if c == nil {
+		return 0
+	}
+	return atomic.LoadUint64(&c.processedCount)
+}
+
+// ErrorCount 返回处理失败（handler 返回 err）的消息总数。
+func (c *Consumer) ErrorCount() uint64 {
+	if c == nil {
+		return 0
+	}
+	return atomic.LoadUint64(&c.errorCount)
+}
+
+// DLQCount 返回移入死信队列的消息总数。
+func (c *Consumer) DLQCount() uint64 {
+	if c == nil {
+		return 0
+	}
+	return atomic.LoadUint64(&c.dlqCount)
 }
 
 // ack 确认消息已处理。失败只 warn，下次重投递会重新处理（幂等保证安全）。

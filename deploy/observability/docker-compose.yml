@@ -1,0 +1,78 @@
+# NimbusDrive 可观测性栈：Prometheus（指标）+ Loki（日志）+ Tempo（追踪）+ Grafana（可视化）。
+#
+# 三支柱联动：
+#   - Prometheus 抓取 APIServer(:8080)/TransferServer(:8081) 的 /metrics
+#   - Tempo 接收 OTLP gRPC(:4317)，与 feat/observability-tracing 的 otlp exporter 对接
+#     （切 config: observability.exporter=otlp 即把 trace 送进 Tempo）
+#   - Loki 接收日志（需配 promtail 或 grafana loki datasource 直连）
+#   - Grafana datasource 自动 provision 三个数据源 + exemplar 关联
+#     （Prometheus 指标点 exemplar → Tempo trace；Tempo span → Loki 日志按 trace_id 查）
+#
+# 使用：开代理后 docker compose up -d，访问 http://localhost:3000（admin/admin）。
+# 不自动拉镜像——由用户在网络可用时手动 docker compose pull。
+#
+# host.docker.internal 用于容器访问宿主机服务（Windows/Mac 原生支持）。
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nimbus-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    container_name: nimbus-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: nimbus-tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP
+      - "4317:4317"   # OTLP gRPC（与 tracing.Init 的 otlp exporter 对接）
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    command: -config.file=/etc/tempo.yaml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nimbus-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:
