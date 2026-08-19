@@ -1,0 +1,97 @@
+# NimbusDrive 基础设施栈：PostgreSQL + Redis + MinIO。
+#
+# 与 config.dev.yaml 对齐：PG(nimbus/nimbus/nimbusdrive:5432)、Redis(:6379)、
+# MinIO(minioadmin/minioadmin/bucket=nimbus-drive:9000)。
+# 应用配置里 host=127.0.0.1，容器端口映射到宿主机同端口，应用直连即可。
+#
+# PG schema 由 init 容器自动执行 migrations/*.sql（幂等，可重复跑）。
+# MinIO bucket 由应用启动时自动创建（storage.New → MakeBucket）。
+#
+# 使用：cd deploy/infra && docker compose up -d
+# 验证：docker compose ps，三个服务都应是 healthy/running。
+# 日志：docker compose logs -f postgres / redis / minio
+#
+# 控制台：MinIO http://localhost:9001（minioadmin/minioadmin）
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nimbus-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nimbus
+      POSTGRES_PASSWORD: nimbus
+      POSTGRES_DB: nimbusdrive
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # migrations 挂载到容器，由 init 容器执行
+      - ../../migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nimbus -d nimbusdrive"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # PG schema 初始化：等 postgres healthy 后执行 migrations/*.sql。
+  # 幂等（SQL 用 IF NOT EXISTS / DO $$ EXCEPTION），重复 up 不报错。
+  postgres-init:
+    image: postgres:16-alpine
+    container_name: nimbus-postgres-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: nimbus
+    volumes:
+      - ../../migrations:/migrations:ro
+    # 按文件名顺序执行所有 .sql。失败则 init 容器退出非 0，便于发现。
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "running migrations..."
+        for f in /migrations/*.sql; do
+          echo "  applying $$f"
+          psql -h postgres -U nimbus -d nimbusdrive -f "$$f"
+        done
+        echo "migrations done."
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: nimbus-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: nimbus-minio
+    ports:
+      - "9000:9000"   # S3 API（应用连接）
+      - "9001:9001"   # Web 控制台
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
