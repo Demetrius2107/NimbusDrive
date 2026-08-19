@@ -12,8 +12,10 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/gin-contrib/sse"
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -96,12 +98,20 @@ func (h *SSEHandler) Stream(c *gin.Context) {
 			if evt.TargetUserID != 0 && evt.TargetUserID != userID {
 				return true
 			}
+			// 从事件提取 trace context，起 linked span 续接管理员变更的 trace。
+			// SSE 连接是多路复用的（一条连接推 N 个管理员变更），不能用连接级 span，
+			// 每条消息独立起 span。
+			msgCtx := tracing.ExtractFromTraceParent(ctx, evt.TraceParent)
+			_, span := tracing.Tracer("quota.sse").Start(msgCtx, "SSE.push."+string(evt.Type),
+				trace.WithSpanKind(trace.SpanKindConsumer),
+			)
 			// 使用 sse.Event 一并写入 event/id/data，id=version 供客户端 Last-Event-ID 重连。
 			_ = sse.Encode(w, sse.Event{
 				Event: "quota",
 				Id:    strconv.FormatInt(evt.Version, 10),
 				Data:  evt,
 			})
+			span.End()
 			return true
 		case <-ticker.C:
 			_ = sse.Encode(w, sse.Event{Event: "heartbeat", Data: ""})

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -44,6 +45,7 @@ type QuotaChangeEvent struct {
 	Type         ChangeType     `json:"type"`
 	Payload      map[string]any `json:"payload"`
 	Timestamp    time.Time      `json:"timestamp"`
+	TraceParent  string         `json:"trace_parent,omitempty"` // W3C traceparent，跨 pub/sub 边界传播
 }
 
 // Notifier 发布配额变更到 Redis（pub/sub 实时推 + Stream 持久化补发）。
@@ -76,6 +78,7 @@ func (n *Notifier) NotifyChange(ctx context.Context, targetUserID int64, changeT
 		Type:         changeType,
 		Payload:      payload,
 		Timestamp:    time.Now().UTC(),
+		TraceParent:  tracing.TraceParentString(ctx),
 	}
 	data, err := json.Marshal(evt)
 	if err != nil {
