@@ -17,6 +17,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/utils"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -36,14 +37,17 @@ type UploadHandler struct {
 	repos   *store.Repositories
 	mc      *storage.MinIO
 	db      *sqlx.DB
-	emitter *eventbus.Emitter // 可为 nil（Redis 不可用时降级）
+	emitter *eventbus.Emitter    // 可为 nil（Redis 不可用时降级）；仅用于 best-effort 事件
+	outbox  *store.OutboxRepo    // 可为 nil；非 nil 时 completeTransaction 同事务写 outbox（持久化事件）
 }
 
 // NewUploadHandler 构造 UploadHandler。
 // db 用于 complete 时的跨表事务（file_hashes + files + users）。
-// emitter 用于上传完成后发射 file.uploaded 事件，可为 nil。
-func NewUploadHandler(repos *store.Repositories, mc *storage.MinIO, db *sqlx.DB, emitter *eventbus.Emitter) *UploadHandler {
-	return &UploadHandler{repos: repos, mc: mc, db: db, emitter: emitter}
+// emitter 用于 best-effort 事件（如 SSE 通知），可为 nil。
+// outbox 用于持久化事件（file.uploaded），非 nil 时 completeTransaction 同事务写入，
+// 由 OutboxRelay 投递——解决 dual-write。为 nil 时降级为 emitter.Emit（非持久）。
+func NewUploadHandler(repos *store.Repositories, mc *storage.MinIO, db *sqlx.DB, emitter *eventbus.Emitter, outbox *store.OutboxRepo) *UploadHandler {
+	return &UploadHandler{repos: repos, mc: mc, db: db, emitter: emitter, outbox: outbox}
 }
 
 // CheckHashRequest 秒传判定 / 创建上传会话请求体。
@@ -438,6 +442,14 @@ func (h *UploadHandler) instantUpload(ctx context.Context, userID int64, req Che
 		if err := h.repos.Users.IncrUsedStorage(ctx, tx, userID, req.Size); err != nil {
 			return err
 		}
+		// outbox 同事务写入（持久化事件，解决 dual-write）。
+		if h.outbox != nil {
+			if _, err := h.outbox.Enqueue(ctx, tx, domain.EventFileUploaded,
+				buildUploadPayload(fileID, userID, req.HashSHA256, req.Size, storagePath, req.Name, req.ParentID, true),
+				tracing.Inject(ctx)); err != nil {
+				return fmt.Errorf("enqueue outbox: %w", err)
+			}
+		}
 		return nil
 	})
 	return fileID, err
@@ -445,6 +457,7 @@ func (h *UploadHandler) instantUpload(ctx context.Context, userID int64, req Che
 
 // completeTransaction 合并完成后的元数据事务。
 // 三步走 repo 方法（executor 接口接受 tx），消除原内联 SQL 与 repo 的漂移。
+// outbox 非 nil 时同事务写入 file.uploaded 事件（持久化，由 OutboxRelay 投递）。
 func (h *UploadHandler) completeTransaction(ctx context.Context, session *domain.UploadSession, storagePath string) error {
 	return h.withTx(ctx, func(tx *sqlx.Tx) error {
 		// file_hashes upsert（ref_count++）。
@@ -459,8 +472,33 @@ func (h *UploadHandler) completeTransaction(ctx context.Context, session *domain
 		if err := h.repos.Users.IncrUsedStorage(ctx, tx, session.UserID, session.TotalSize); err != nil {
 			return err
 		}
+		// outbox 同事务写入（持久化事件，解决 dual-write）。
+		if h.outbox != nil {
+			if _, err := h.outbox.Enqueue(ctx, tx, domain.EventFileUploaded,
+				buildUploadPayload(session.FileID, session.UserID, session.HashSHA256, session.TotalSize, storagePath, "", nil, false),
+				tracing.Inject(ctx)); err != nil {
+				return fmt.Errorf("enqueue outbox: %w", err)
+			}
+		}
 		return nil
 	})
+}
+
+// buildUploadPayload 构造 file.uploaded 事件载荷。
+func buildUploadPayload(fileID, userID int64, hash string, size int64, storagePath, name string, parentID *int64, instant bool) map[string]any {
+	payload := map[string]any{
+		"file_id":      fileID,
+		"user_id":      userID,
+		"hash_sha256":  hash,
+		"size":         size,
+		"storage_path": storagePath,
+		"name":         name,
+		"instant":      instant,
+	}
+	if parentID != nil {
+		payload["parent_id"] = *parentID
+	}
+	return payload
 }
 
 // precheckQuota 配额预检（非原子，仅避免无意义创建会话；真正扣减在 complete 事务）。
@@ -531,7 +569,9 @@ func hertzNotFound(c *app.RequestContext, msg string) {
 	c.JSON(consts.StatusNotFound, utils.H{"code": string(domain.CodeNotFound), "message": msg})
 }
 
-// emitFileUploaded 发射 file.uploaded 事件。emitter 为 nil 或 channel 满时静默降级。
+// emitFileUploaded 记录上传完成指标 + 发射 file.uploaded 事件。
+// outbox 非 nil 时事件已在 completeTransaction/instantUpload 事务内持久化，
+// 此处只记指标；outbox 为 nil（降级）时回退到 emitter.Emit（非持久 best-effort）。
 // parentID 传 *int64 或 nil；instant 区分秒传与分块合并。
 func (h *UploadHandler) emitFileUploaded(ctx context.Context, fileID, userID int64, hash string, size int64, storagePath, name string, parentID any, instant bool) {
 	// 业务指标：上传完成数 + 字节数。放在 emitter nil-check 前，
@@ -543,6 +583,11 @@ func (h *UploadHandler) emitFileUploaded(ctx context.Context, fileID, userID int
 	metrics.Default().UploadsCompleted.WithLabelValues(typ, "success").Inc()
 	metrics.Default().UploadBytes.WithLabelValues(typ).Add(float64(size))
 
+	// outbox 非 nil：事件已在事务内持久化，此处不重复发射。
+	if h.outbox != nil {
+		return
+	}
+	// 降级路径：outbox 为 nil 时用 emitter.Emit（非持久 best-effort）。
 	if h.emitter == nil {
 		return
 	}

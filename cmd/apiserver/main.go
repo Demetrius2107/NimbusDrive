@@ -17,12 +17,14 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/cache"
 	"github.com/Demetrius2107/NimbusDrive/internal/config"
 	"github.com/Demetrius2107/NimbusDrive/internal/contract"
+	"github.com/Demetrius2107/NimbusDrive/internal/cron"
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus"
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus/consumers"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
 	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/quota"
+	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
@@ -186,18 +188,54 @@ func main() {
 	// 配额实时推送：Redis 可用时构造 Notifier + SSE handler + 月度重置 cron。
 	var notifier *quota.Notifier
 	var sseHandler *quota.SSEHandler
-	var cronStop func()
+	var monthlyCronStop func()
 	if rc != nil {
 		notifier = quota.NewNotifier(rc.Client)
 		if st != nil {
 			sseHandler = quota.NewSSEHandler(notifier, st.Repos().Quotas, st.Repos().Users)
 			// 月度配额重置 cron：进程内每 6h 检查月初，为活跃用户批量建当月行。
 			resetCron := quota.NewMonthlyResetCron(st.Repos().Quotas)
-			cronStop = resetCron.Start(ctx)
-			defer cronStop()
+			monthlyCronStop = resetCron.Start(ctx)
+			defer monthlyCronStop()
 		}
 	} else {
 		logger.L.Warn("quota streaming disabled: redis unavailable")
+	}
+
+	// MinIO 客户端：APIServer 控制面用（hash GC 回收物理对象）。
+	// storage 包注释已预期 APIServer 使用 MinIO；与 TransferServer 同配置。
+	// PG+MinIO 齐全时装配 4 个清理/relay cron（crons 全部跑在 APIServer 控制面）。
+	// 变量名 minioCli 避开上方 metrics 收集器 mc（line 67）。
+	var minioCli *storage.MinIO
+	var outboxRepo *store.OutboxRepo
+	if st != nil {
+		minioCli, err = storage.New(ctx, cfg.MinIO.Endpoint, cfg.MinIO.AccessKey, cfg.MinIO.SecretKey, cfg.MinIO.Bucket, cfg.MinIO.Region, cfg.MinIO.UseSSL, cfg.MinIO.PublicEndpoint, cfg.MinIO.PublicUseSSL)
+		if err != nil {
+			logger.L.Warn("minio unavailable, GC crons disabled", zap.Error(err))
+			minioCli = nil
+		}
+		outboxRepo = store.NewOutboxRepo(st.DB)
+	}
+	if st != nil && minioCli != nil {
+		repos := st.Repos()
+		// 回收站 30 天物理清理 cron。
+		trashCron := cron.NewTrashPurgeCron(repos.Files, repos.Hashes, repos.Users, st.DB,
+			cfg.Cron.TrashPurge.RetentionDays, cfg.Cron.TrashPurge.BatchSize, cfg.Cron.TrashPurge.IntervalSec)
+		defer trashCron.Start(ctx)()
+		// 零引用哈希 GC cron（tombstone + grace + MinIO 回收）。
+		hashGCCron := cron.NewHashGCCron(repos.Hashes, minioCli, st.DB,
+			cfg.Cron.HashGC.GraceHours, cfg.Cron.HashGC.BatchSize, cfg.Cron.HashGC.IntervalSec)
+		defer hashGCCron.Start(ctx)()
+		// 上传会话过期清理 cron。
+		sessionCron := cron.NewSessionExpiryCron(repos.Uploads, repos.Files, minioCli,
+			cfg.Cron.SessionExpiry.BatchSize, cfg.Cron.SessionExpiry.IntervalSec)
+		defer sessionCron.Start(ctx)()
+	}
+	// outbox relay：PG+emitter 齐全即装配（不依赖 MinIO）。
+	if st != nil && emitter != nil {
+		relay := cron.NewOutboxRelay(outboxRepo, emitter, st.DB,
+			cfg.Cron.Outbox.BatchSize, cfg.Cron.Outbox.IntervalSec)
+		defer relay.Start(ctx)()
 	}
 	// /metrics 端点：无 JWT 保护（与 /healthz 同级），生产用反向代理/网络隔离保护。
 	// EnableOpenMetrics 协商：Prometheus 2.5+ 优先用 OpenMetrics，exemplar 仅此格式可传。
@@ -207,7 +245,7 @@ func main() {
 		})))
 	}
 
-	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la, notifier, sseHandler, cfg.MinIO)
+	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la, notifier, sseHandler, outboxRepo, cfg.MinIO)
 
 	srv := &http.Server{
 		Addr:         cfg.APIServer.Addr(),
@@ -235,7 +273,7 @@ func main() {
 	logger.L.Info("apiserver stopped")
 }
 
-func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator, notifier *quota.Notifier, sseHandler *quota.SSEHandler, minioCfg config.MinIOConfig) {
+func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator, notifier *quota.Notifier, sseHandler *quota.SSEHandler, outboxRepo *store.OutboxRepo, minioCfg config.MinIOConfig) {
 	r.GET("/healthz", healthz(st, rc))
 
 	v1 := r.Group("/api/v1")

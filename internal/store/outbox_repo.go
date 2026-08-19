@@ -22,6 +22,11 @@ type OutboxRepo struct {
 	db *sqlx.DB
 }
 
+// NewOutboxRepo 构造 OutboxRepo。
+func NewOutboxRepo(db *sqlx.DB) *OutboxRepo {
+	return &OutboxRepo{db: db}
+}
+
 // OutboxMessage 对应 outbox 表的一行（relay 投递用）。
 type OutboxMessage struct {
 	ID           string                 `db:"id" json:"id"`
