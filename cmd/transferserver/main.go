@@ -56,7 +56,7 @@ func main() {
 	}
 	defer func() { _ = rc.Close() }()
 
-	mc, err := storage.New(ctx, cfg.MinIO.Endpoint, cfg.MinIO.AccessKey, cfg.MinIO.SecretKey, cfg.MinIO.Bucket, cfg.MinIO.Region, cfg.MinIO.UseSSL)
+	mc, err := storage.New(ctx, cfg.MinIO.Endpoint, cfg.MinIO.AccessKey, cfg.MinIO.SecretKey, cfg.MinIO.Bucket, cfg.MinIO.Region, cfg.MinIO.UseSSL, cfg.MinIO.PublicEndpoint, cfg.MinIO.PublicUseSSL)
 	if err != nil {
 		logger.L.Warn("minio unavailable, running in degraded mode", zap.Error(err))
 	}
@@ -90,7 +90,7 @@ func main() {
 		middleware.HertzRecovery(),
 	)
 
-	registerRoutes(h, st, rc, mc, jwtMgr, reg, emitter)
+	registerRoutes(h, st, rc, mc, jwtMgr, reg, emitter, cfg.MinIO)
 
 	go func() {
 		h.Spin()
@@ -106,7 +106,7 @@ func main() {
 	logger.L.Info("transferserver stopped")
 }
 
-func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter) {
+func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *storage.MinIO, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, minioCfg config.MinIOConfig) {
 	h.GET("/healthz", healthz(st, rc, mc))
 
 	v1 := h.Group("/api/v1")
@@ -127,7 +127,9 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	// 下载模块：受 JWT 鉴权保护。
 	download := v1.Group("/download", middleware.HertzJWTAuth(jwtMgr))
 	if st != nil && mc != nil {
-		dh := handler.NewDownloadHandler(st.Repos(), mc)
+		dh := handler.NewDownloadHandler(st.Repos(), mc, minioCfg.PresignExpireSec)
+		// presign 路由必须在 /:fileId 之前注册，避免被通配路由吞掉。
+		download.GET("/:fileId/presign", dh.Presign)
 		download.GET("/:fileId", dh.Download)
 		download.HEAD("/:fileId", dh.Head)
 	} else {

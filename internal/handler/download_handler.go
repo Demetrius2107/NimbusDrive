@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -14,22 +13,25 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/common/utils"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/minio/minio-go/v7"
 )
 
 // DownloadHandler 处理 TransferServer 的下载接口。
-// MVP 走流式回写：MinIO GetObject → TransferServer → 客户端。
-// 预签名 URL 直连 MinIO 留 P2。
+// 流式回写（MinIO GetObject → TransferServer → 客户端）与预签名直连（Presign）两种路径并存：
+// 预签名为主路径，流式作降级（公网端点未配 / MinIO 直连不通时回退）。
 type DownloadHandler struct {
-	repos *store.Repositories
-	mc    *storage.MinIO
+	repos            *store.Repositories
+	mc               *storage.MinIO
+	presignExpireSec int
 }
 
 // NewDownloadHandler 构造 DownloadHandler。
 // 下载只需读 files 表 + MinIO，无跨表事务，不需要 db。
-func NewDownloadHandler(repos *store.Repositories, mc *storage.MinIO) *DownloadHandler {
-	return &DownloadHandler{repos: repos, mc: mc}
+// presignExpireSec 控制预签名 URL 有效期（秒）。
+func NewDownloadHandler(repos *store.Repositories, mc *storage.MinIO, presignExpireSec int) *DownloadHandler {
+	return &DownloadHandler{repos: repos, mc: mc, presignExpireSec: presignExpireSec}
 }
 
 // Download GET /api/v1/download/:fileId
@@ -72,7 +74,7 @@ func (h *DownloadHandler) Download(ctx context.Context, c *app.RequestContext) {
 
 	// 设置响应头。
 	c.Header("Content-Type", file.MimeType)
-	c.Header("Content-Disposition", buildContentDisposition(file.Name))
+	c.Header("Content-Disposition", storage.BuildContentDisposition(file.Name))
 	c.Header("Accept-Ranges", "bytes")
 
 	if hasRange {
@@ -88,7 +90,33 @@ func (h *DownloadHandler) Download(ctx context.Context, c *app.RequestContext) {
 	}
 }
 
-// Head HEAD /api/v1/download/:fileId
+// Presign GET /api/v1/download/:fileId/presign
+// 鉴权 + owner 校验 → 签发直连 MinIO 的预签名 URL，字节流不再过 TransferServer。
+// 预签名 URL 的签名覆盖 query 参数，不覆盖 Range 头：客户端可对同一 URL 发多次
+// Range 请求做分块下载，无需每块单独签。
+// 响应头（Content-Type / Content-Disposition）通过 response-* 查询参数由 MinIO 注入。
+func (h *DownloadHandler) Presign(ctx context.Context, c *app.RequestContext) {
+	file, ok := h.validateAndFetch(ctx, c)
+	if !ok {
+		return
+	}
+
+	rawURL, err := h.mc.PresignedDownloadURL(ctx, *file.StoragePath, h.presignExpireSec, file.Name, file.MimeType)
+	if err != nil {
+		hertzInternal(c, "签发下载链接失败")
+		return
+	}
+
+	c.JSON(consts.StatusOK, utils.H{
+		"code":    string(domain.CodeOK),
+		"message": "ok",
+		"data": utils.H{
+			"url":        rawURL,
+			"expires_in": h.presignExpireSec,
+			"method":     "GET",
+		},
+	})
+}
 // 预检：返回文件大小与 Content-Type，不传输 body。
 // 客户端据此决定分块下载策略。
 func (h *DownloadHandler) Head(ctx context.Context, c *app.RequestContext) {
@@ -98,7 +126,7 @@ func (h *DownloadHandler) Head(ctx context.Context, c *app.RequestContext) {
 	}
 
 	c.Header("Content-Type", file.MimeType)
-	c.Header("Content-Disposition", buildContentDisposition(file.Name))
+	c.Header("Content-Disposition", storage.BuildContentDisposition(file.Name))
 	c.Header("Accept-Ranges", "bytes")
 	c.Header("Content-Length", strconv.FormatInt(file.Size, 10))
 	c.SetStatusCode(consts.StatusOK)
@@ -221,24 +249,4 @@ func parseRange(rangeHeader string, totalSize int64) (start, end int64, ok bool)
 		e = totalSize - 1
 	}
 	return s, e, true
-}
-
-// buildContentDisposition 构造 Content-Disposition 头。
-// 文件名纯 ASCII 用 filename="..."；含非 ASCII 用 RFC 5987 的 filename*=UTF-8''...
-func buildContentDisposition(filename string) string {
-	if isASCII(filename) {
-		return fmt.Sprintf(`attachment; filename="%s"`, filename)
-	}
-	encoded := url.PathEscape(filename)
-	return fmt.Sprintf(`attachment; filename*=UTF-8''%s`, encoded)
-}
-
-// isASCII 判断字符串是否全部为 ASCII 字符。
-func isASCII(s string) bool {
-	for _, r := range s {
-		if r > 127 {
-			return false
-		}
-	}
-	return true
 }
