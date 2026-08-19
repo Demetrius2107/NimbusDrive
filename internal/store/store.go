@@ -41,6 +41,7 @@ type Repositories struct {
 	Hashes  *FileHashRepo
 	Uploads *UploadSessionRepo
 	Shares  *ShareRepo
+	Quotas  *QuotaRepo
 }
 
 // Repos 返回聚合 repository 结构。
@@ -51,6 +52,7 @@ func (s *Store) Repos() *Repositories {
 		Hashes:  &FileHashRepo{db: s.DB},
 		Uploads: &UploadSessionRepo{db: s.DB},
 		Shares:  &ShareRepo{db: s.DB},
+		Quotas:  &QuotaRepo{db: s.DB},
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/eventbus/consumers"
 	"github.com/Demetrius2107/NimbusDrive/internal/handler"
 	"github.com/Demetrius2107/NimbusDrive/internal/logger"
+	"github.com/Demetrius2107/NimbusDrive/internal/quota"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
 	"github.com/gin-gonic/gin"
@@ -108,13 +109,14 @@ func main() {
 			BlockMs:       cfg.EventBus.BlockMs,
 			DLQPrefix:     cfg.EventBus.DLQPrefix,
 		}
-		// 4 个消费者：审计（需 LogAggregator）、上传统计、配额对账、no-op 骨架
+		// 5 个消费者：审计（需 LogAggregator）、上传统计、传输配额、配额对账、no-op 骨架
 		builders := []struct {
 			name    string
 			builder consumers.ConsumerBuilder
 		}{
 			{"api-audit", consumers.NewAuditConsumer(la)},
 			{"api-upload-stats", consumers.NewUploadStatsConsumer(rc.Client)},
+			{"api-quota", consumers.NewQuotaConsumer(st.DB)},
 			{"api-quota-reconcile", consumers.NewQuotaReconcileConsumer(st.DB, rc.Client)},
 			{"api-noop", consumers.NewNoopConsumer()},
 		}
@@ -135,7 +137,24 @@ func main() {
 	} else {
 		logger.L.Warn("event bus disabled: redis unavailable")
 	}
-	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la, cfg.MinIO)
+
+	// 配额实时推送：Redis 可用时构造 Notifier + SSE handler + 月度重置 cron。
+	var notifier *quota.Notifier
+	var sseHandler *quota.SSEHandler
+	var cronStop func()
+	if rc != nil {
+		notifier = quota.NewNotifier(rc.Client)
+		if st != nil {
+			sseHandler = quota.NewSSEHandler(notifier, st.Repos().Quotas, st.Repos().Users)
+			// 月度配额重置 cron：进程内每 6h 检查月初，为活跃用户批量建当月行。
+			resetCron := quota.NewMonthlyResetCron(st.Repos().Quotas)
+			cronStop = resetCron.Start(ctx)
+			defer cronStop()
+		}
+	} else {
+		logger.L.Warn("quota streaming disabled: redis unavailable")
+	}
+	registerRoutes(r, st, rc, adb, jwtMgr, reg, emitter, la, notifier, sseHandler, cfg.MinIO)
 
 	srv := &http.Server{
 		Addr:         cfg.APIServer.Addr(),
@@ -163,7 +182,7 @@ func main() {
 	logger.L.Info("apiserver stopped")
 }
 
-func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator, minioCfg config.MinIOConfig) {
+func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *adminstore.DB, jwtMgr *auth.JWTManager, reg *contract.Registry, emitter *eventbus.Emitter, la *adminstore.LogAggregator, notifier *quota.Notifier, sseHandler *quota.SSEHandler, minioCfg config.MinIOConfig) {
 	r.GET("/healthz", healthz(st, rc))
 
 	v1 := r.Group("/api/v1")
@@ -227,17 +246,26 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 				adminstore.NewFileRepo(adb.GORM),
 				adminstore.NewLogQueryRepo(adb.GORM),
 				la,
+				notifier,
 			)
 			adminGrp := v1.Group("/admin", middleware.GinJWTAuth(jwtMgr), middleware.GinAdminOnly())
 			{
 				adminGrp.GET("/users", ah.ListUsers)
 				adminGrp.PATCH("/users/:id/status", ah.UpdateUserStatus)
 				adminGrp.PATCH("/users/:id/quota", ah.UpdateUserQuota)
+				adminGrp.POST("/users/quota/reset", ah.ResetAllQuota)
 				adminGrp.GET("/files", ah.ListFiles)
 				adminGrp.GET("/logs", ah.ListLogs)
 			}
 		} else {
 			logger.L.Warn("adminstore unavailable, /admin routes disabled")
+		}
+
+		// 配额实时推送：SSE 长连接，JWT 保护。Redis/PG 不可用时 handler 未构造，跳过。
+		if sseHandler != nil {
+			v1.GET("/quota/stream", middleware.GinJWTAuthAllowQuery(jwtMgr), sseHandler.Stream)
+		} else {
+			logger.L.Warn("quota SSE endpoint disabled: redis or postgres unavailable")
 		}
 	}
 }

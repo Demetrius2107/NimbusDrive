@@ -81,3 +81,14 @@ func (r *UserRepo) UpdateQuota(ctx context.Context, id int64, quota int64) (oldQ
 	}
 	return oldQuota, nil
 }
+
+// ResetAllQuota 批量重置所有非管理员用户的存储配额。返回受影响行数。
+func (r *UserRepo) ResetAllQuota(ctx context.Context, quota int64) (int64, error) {
+	res := r.db.WithContext(ctx).Model(&User{}).
+		Where("is_admin = false").
+		Update("storage_quota", quota)
+	if res.Error != nil {
+		return 0, fmt.Errorf("reset all quota: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}

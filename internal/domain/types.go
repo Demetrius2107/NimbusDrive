@@ -109,6 +109,21 @@ type Share struct {
 	UpdatedAt    string     `db:"updated_at" json:"updated_at"`
 }
 
+// QuotaPeriod 对应 quota_periods 表，记录用户月度传输配额用量。每月一行。
+// period 格式 "YYYY-MM"。upload_quota/download_quota = 0 表示不限。
+type QuotaPeriod struct {
+	ID            int64  `db:"id" json:"id"`
+	UserID        int64  `db:"user_id" json:"user_id"`
+	Period        string `db:"period" json:"period"`
+	UploadBytes   int64  `db:"upload_bytes" json:"upload_bytes"`
+	DownloadBytes int64  `db:"download_bytes" json:"download_bytes"`
+	UploadQuota   int64  `db:"upload_quota" json:"upload_quota"`
+	DownloadQuota int64  `db:"download_quota" json:"download_quota"`
+	ResetAt       string `db:"reset_at" json:"reset_at"`
+	CreatedAt     string `db:"created_at" json:"created_at"`
+	UpdatedAt     string `db:"updated_at" json:"updated_at"`
+}
+
 // ErrorCode 是统一业务错误码。
 type ErrorCode string
 
