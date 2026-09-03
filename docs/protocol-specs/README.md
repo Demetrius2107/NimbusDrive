@@ -33,6 +33,7 @@
 - [download.md](./download.md) — 下载协议（GET/HEAD、Range、当前无 416 的行为、owner-only 限制）
 - [share.md](./share.md) — 分享协议（create/validate/get/list/cancel）
 - [persistence-gc.md](./persistence-gc.md) — 存储持久层 GC / 清理协议（哈希 GC 墓碑 + grace、回收站清理、会话过期、事务型 outbox）
+- [webdav.md](./webdav.md) — WebDAV 协议设计（P2：挂载点 /dav、应用专用密码认证、FileSystem 适配器映射）
 
 ## 四、已知 Gap（留后续）
 
