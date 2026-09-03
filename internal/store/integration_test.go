@@ -63,8 +63,8 @@ func itestFile(t *testing.T, st *Store, userID int64) int64 {
 	name := fmt.Sprintf("itest-file-%d", time.Now().UnixNano())
 	if err := st.DB.Get(&id,
 		`INSERT INTO files (user_id, name, size, is_folder, status, storage_path)
-		 VALUES ($1, $2, 4096, false, 'ready', 'itest/' || $2) RETURNING id`,
-		userID, name); err != nil {
+		 VALUES ($1, $2, 4096, false, 'completed', $3) RETURNING id`,
+		userID, name, "itest/"+name); err != nil {
 		t.Fatalf("create test file: %v", err)
 	}
 	// 随用户级联删除，无需单独清理
