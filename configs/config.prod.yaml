@@ -1,0 +1,98 @@
+# NimbusDrive 容器部署配置（deploy/docker-compose.yml 全栈使用）。
+#
+# 基线假设：单机 Docker，服务间用容器网络 DNS（postgres/redis/minio），
+# 浏览器通过宿主机映射端口访问（web:80 / minio:9000）。
+# 敏感字段（JWT 密钥、数据库/对象存储凭据）用 NIMBUS_* 环境变量覆盖，
+# 见 deploy/.env.example；compose 已接好对应变量。
+#
+# 日志策略：容器内 log_dir 留空 → 仅 stdout，由 docker logs / Loki 采集。
+# 追踪策略：exporter=otlp 推栈内 Tempo（deploy/observability 同款配置）。
+
+app:
+  name: NimbusDrive
+  env: prod
+  log_level: info
+  log_dir: "" # 空 = 仅 stdout（容器最佳实践，文件日志交给采集器）
+  storage_mode: minio
+
+api_server:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout_sec: 30
+  write_timeout_sec: 30
+
+transfer_server:
+  host: 0.0.0.0
+  port: 8081
+  read_timeout_sec: 300
+  write_timeout_sec: 300
+
+postgres:
+  host: postgres
+  port: 5432
+  user: nimbus
+  password: nimbus # 生产用 NIMBUS_POSTGRES_PASSWORD 覆盖
+  database: nimbusdrive
+  ssl_mode: disable # 容器网络内部；跨机部署换 verify-full
+  max_open_conns: 50
+  max_idle_conns: 10
+
+redis:
+  host: redis
+  port: 6379
+  password: ""
+  db: 0
+
+minio:
+  endpoint: minio:9000
+  access_key: minioadmin # 生产用 NIMBUS_MINIO_ACCESS_KEY 覆盖
+  secret_key: minioadmin # 生产用 NIMBUS_MINIO_SECRET_KEY 覆盖
+  bucket: nimbus-drive
+  use_ssl: false
+  region: us-east-1
+  presign_expire_sec: 3600
+  # 预签名 URL 必须用浏览器可达端点：单机部署即宿主机映射端口 localhost:9000。
+  # 域名/HTTPS 部署时用 NIMBUS_MINIO_PUBLIC_ENDPOINT / NIMBUS_MINIO_PUBLIC_USE_SSL 覆盖。
+  public_endpoint: localhost:9000
+  public_use_ssl: false
+  share_download_token_ttl_sec: 300
+
+jwt:
+  secret: change-me-in-prod # 生产必须用 NIMBUS_JWT_SECRET 覆盖
+  access_exp_min: 120
+  refresh_exp_day: 30
+  issuer: nimbusdrive
+
+event_bus:
+  stream_prefix: "nimbus:events:"
+  consumer_group: "nimbus-workers"
+  buffer_size: 1024
+  max_retries: 3
+  block_ms: 2000
+  dlq_prefix: "nimbus:dlq:"
+  stream_max_len: 10000
+
+observability:
+  exporter: otlp
+  otlp_endpoint: tempo:4317 # 栈内 Tempo（deploy/observability 同一套配置文件）
+  service_name: ""
+  sample_ratio: 1.0
+  metrics_enabled: true
+  metrics_path: /metrics
+
+# cron 参数沿用代码默认值即可，此处显式写出便于调参。
+cron:
+  trash_purge:
+    interval_sec: 21600
+    retention_days: 30
+    batch_size: 100
+  hash_gc:
+    interval_sec: 21600
+    grace_hours: 24
+    batch_size: 50
+  session_expiry:
+    interval_sec: 3600
+    batch_size: 200
+  outbox:
+    interval_sec: 2
+    batch_size: 100

@@ -27,6 +27,9 @@ web-build/
 # === 配置与环境（含敏感信息，不入库） ===
 configs/config.prod.yaml
 configs/config.local.yaml
+# 例外：容器部署基线配置（凭据经 deploy/.env + NIMBUS_* 注入，文件本身无密钥，
+# 镜像构建 COPY 需要它入库）。见 deploy/README.md。
+!configs/config.prod.yaml
 .env
 .env.*
 !.env.example

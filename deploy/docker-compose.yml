@@ -1,0 +1,192 @@
+# NimbusDrive 全栈一键部署。
+#
+# 用法（在 deploy/ 目录下）：
+#   docker compose up -d                        # 中间件 + 双后端 + 前端
+#   docker compose --profile observability up -d # 追加 Prometheus/Loki/Tempo/Grafana
+#   docker compose down                          # 停止（数据卷保留）
+#
+# 拓扑：
+#   web(nginx:80) ──┬─ /api/v1/upload,/download → transferserver:8081
+#                   ├─ /api/*、/api/v1/quota/stream → apiserver:8080
+#                   └─ 其余 → SPA 静态资源
+#   apiserver / transferserver → postgres:5432 / redis:6379 / minio:9000
+#   浏览器直连预签名下载 → 宿主机 9000（minio.public_endpoint=localhost:9000）
+#
+# 凭据：默认值与 infra 栈一致（本地部署级），生产用 deploy/.env 覆盖，
+#       见 .env.example（POSTGRES_PASSWORD / MINIO_ROOT_* / JWT_SECRET / MINIO_PUBLIC_ENDPOINT）。
+# 网络：Docker Hub / Go 模块 / npm 源受限的环境用镜像代理，例如：
+#   DOCKER_REGISTRY=docker.m.daocloud.io GOPROXY=https://goproxy.cn,direct
+#   NPM_REGISTRY=https://registry.npmmirror.com
+# 注意：本文件 include 了 infra 栈且沿用其固定容器名，启动前先停掉开发用的
+#       deploy/infra 栈（cd deploy/infra && docker compose down），否则容器名冲突。
+#
+# 验证：docker compose ps 全部 healthy；浏览器 http://localhost 即前端。
+
+name: nimbus
+
+include:
+  # 复用开发基础设施栈：postgres(+迁移 init) / redis / minio，含健康检查。
+  - ./infra/docker-compose.yml
+
+services:
+  apiserver:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: apiserver
+        REGISTRY: ${DOCKER_REGISTRY:-docker.io}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    image: nimbus-api:latest
+    container_name: nimbus-apiserver
+    ports:
+      - "8080:8080"
+    environment:
+      NIMBUS_CONFIG_NAME: config.prod
+      NIMBUS_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nimbus}
+      NIMBUS_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      NIMBUS_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      NIMBUS_MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      NIMBUS_JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  transferserver:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: transferserver
+        REGISTRY: ${DOCKER_REGISTRY:-docker.io}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    image: nimbus-transfer:latest
+    container_name: nimbus-transferserver
+    ports:
+      - "8081:8081"
+    environment:
+      NIMBUS_CONFIG_NAME: config.prod
+      NIMBUS_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nimbus}
+      NIMBUS_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      NIMBUS_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      NIMBUS_MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      NIMBUS_JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        REGISTRY: ${DOCKER_REGISTRY:-docker.io}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: nimbus-web:latest
+    container_name: nimbus-web
+    ports:
+      - "80:80"
+    depends_on:
+      - apiserver
+      - transferserver
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  # ---- 可观测栈（可选，--profile observability）----
+  # Prometheus 用容器名抓取双服务 /metrics；Grafana 数据源 provision 复用
+  # deploy/observability 的现成配置（服务名本就是容器 DNS）。
+  # 应用侧 otlp exporter 推 tempo:4317；本 profile 不启用时追踪自动降级关闭。
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nimbus-prometheus
+    profiles: ["observability"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.docker.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    container_name: nimbus-loki
+    profiles: ["observability"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: nimbus-tempo
+    profiles: ["observability"]
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./observability/tempo-config.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    command: -config.file=/etc/tempo.yaml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nimbus-grafana
+    profiles: ["observability"]
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:
