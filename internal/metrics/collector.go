@@ -81,6 +81,15 @@ type Collector struct {
 	SSEActiveConnections prometheus.Gauge
 	// SSE 推送的事件数
 	SSEEventsPushed prometheus.Counter
+
+	// --- 后台清理 cron ---
+	TrashPurgeFilesDeleted prometheus.Counter
+	HashGCObjectsReclaimed prometheus.Counter
+	HashGCObjectsFailed   *prometheus.CounterVec
+	SessionExpirySwept    *prometheus.CounterVec
+	OutboxRelayPublished  prometheus.Counter
+	OutboxRelayErrors     *prometheus.CounterVec
+	OutboxPending         prometheus.Gauge
 }
 
 // newCollector 构造 Collector 并把所有仪器注册到 reg。仪器名统一 nimbus_ 前缀。
@@ -191,6 +200,43 @@ func newCollector(reg *prometheus.Registry) *Collector {
 		Help: "SSE events pushed to clients.",
 	})
 
+	// --- 后台清理 cron ---
+	// 回收站物理清理：删除的文件节点数
+	c.TrashPurgeFilesDeleted = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "nimbus_trash_purge_files_deleted_total",
+		Help: "File nodes physically deleted by the trash purge cron (30-day retention).",
+	})
+	// 哈希 GC：回收的物理对象数
+	c.HashGCObjectsReclaimed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "nimbus_hashgc_objects_reclaimed_total",
+		Help: "MinIO objects reclaimed by the zero-ref hash GC cron.",
+	})
+	// 哈希 GC 失败：label reason=remove_failed|delete_failed
+	c.HashGCObjectsFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nimbus_hashgc_objects_failed_total",
+		Help: "Hash GC failures, partitioned by reason.",
+	}, []string{"reason"})
+	// 会话过期清理：label result=success|error
+	c.SessionExpirySwept = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nimbus_session_expiry_swept_total",
+		Help: "Expired upload sessions swept by the session expiry cron, partitioned by result.",
+	}, []string{"result"})
+	// outbox relay 投递成功数
+	c.OutboxRelayPublished = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "nimbus_outbox_relay_published_total",
+		Help: "Outbox events published to Redis Streams by the relay.",
+	})
+	// outbox relay 失败：label reason=publish_failed|mark_failed
+	c.OutboxRelayErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nimbus_outbox_relay_errors_total",
+		Help: "Outbox relay errors, partitioned by reason.",
+	}, []string{"reason"})
+	// outbox 待投递数（scrape-time gauge，由 infra collector 查 CountPending）
+	c.OutboxPending = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "nimbus_outbox_pending",
+		Help: "Outbox events pending publication (published_at IS NULL).",
+	})
+
 	reg.MustRegister(
 		c.RequestsTotal,
 		c.RequestDuration,
@@ -211,6 +257,13 @@ func newCollector(reg *prometheus.Registry) *Collector {
 		c.AdminQuotaResetAll,
 		c.SSEActiveConnections,
 		c.SSEEventsPushed,
+		c.TrashPurgeFilesDeleted,
+		c.HashGCObjectsReclaimed,
+		c.HashGCObjectsFailed,
+		c.SessionExpirySwept,
+		c.OutboxRelayPublished,
+		c.OutboxRelayErrors,
+		c.OutboxPending,
 	)
 
 	return c

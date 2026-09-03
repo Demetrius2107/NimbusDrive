@@ -162,7 +162,8 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	// 上传模块：受 JWT 鉴权保护。
 	upload := v1.Group("/upload", middleware.HertzJWTAuth(jwtMgr))
 	if st != nil && mc != nil {
-		uh := handler.NewUploadHandler(st.Repos(), mc, st.DB, emitter)
+		outboxRepo := store.NewOutboxRepo(st.DB)
+		uh := handler.NewUploadHandler(st.Repos(), mc, st.DB, emitter, outboxRepo)
 		upload.POST("/check-hash", middleware.HertzContract(reg, contract.UploadCheckHash), uh.CheckHash)
 		upload.PUT("/:sessionId/chunks/:index", uh.UploadChunk)
 		upload.GET("/:sessionId", uh.GetUploadStatus)

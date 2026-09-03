@@ -131,6 +131,39 @@ func (r *UploadSessionRepo) MarkExpired(ctx context.Context) (int, error) {
 	return int(affected), nil
 }
 
+// ListExpired 列出已标记 expired 的会话（cron 标记后清理用）。
+// 返回 file_id（init 占位文件清理）+ upload_id（AbortMultipartUpload）。
+// batch 控制单批大小。仅返回 upload_id 非空的会话（有 MinIO multipart 需中止）；
+// upload_id 为空的会话（未开始上传分块）只需清理占位文件，由 HardDelete 覆盖。
+func (r *UploadSessionRepo) ListExpired(ctx context.Context, limit int) ([]domain.UploadSession, error) {
+	const q = `SELECT id, user_id, file_id, hash_sha256, total_size, chunk_size, total_chunks,
+		uploaded_chunks, upload_id, status, expires_at, created_at, updated_at
+		FROM upload_sessions
+		WHERE status = 'expired'
+		ORDER BY expires_at
+		LIMIT $1`
+	var sessions []domain.UploadSession
+	if err := r.db.SelectContext(ctx, &sessions, q, limit); err != nil {
+		return nil, fmt.Errorf("list expired upload_sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+// DeleteByID 删除会话行（cron 清理完占位文件 + Multipart 后调）。
+// expired 会话清理完毕即删行——无保留价值，避免 cron 重复扫描。
+func (r *UploadSessionRepo) DeleteByID(ctx context.Context, id string) error {
+	const q = `DELETE FROM upload_sessions WHERE id = $1 AND status = 'expired'`
+	res, err := r.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("delete upload_session: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 // --- 位图工具 ---
 
 // ensureBitmapLen 保证位图字节切片长度足够容纳 totalChunks 个位。
