@@ -86,6 +86,28 @@ func (r *FileRepo) ListByParent(ctx context.Context, userID int64, parentID *int
 	return nodes, total, nil
 }
 
+// GetChildByName 按 (user_id, parent_id, name) 精确取一个未删除的子节点。
+// 供 WebDAV 路径逐段解析使用（邻接表无 path 列，逐段定位走唯一索引）。
+// 未完成上传的文件（status != 'completed'）视为不存在，挂载端不暴露中间态。
+// parentID 为 nil 表示在用户根目录下查找。
+func (r *FileRepo) GetChildByName(ctx context.Context, userID int64, parentID *int64, name string) (*domain.FileNode, error) {
+	const q = `
+		SELECT ` + fileCols + ` FROM files
+		WHERE user_id = $1 AND deleted_at IS NULL AND name = $2 AND
+		      ((parent_id IS NULL AND $3::bigint IS NULL) OR parent_id = $3)`
+	var node domain.FileNode
+	if err := r.db.GetContext(ctx, &node, q, userID, name, parentID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("get child by name: %w", err)
+	}
+	if !node.IsFolder && node.Status != domain.FileStatusCompleted {
+		return nil, domain.ErrNotFound
+	}
+	return &node, nil
+}
+
 // MarkCompleted 上传完成回写：状态置 completed，记录哈希、存储路径、分块数、实际大小。
 // size 单独传入：上传完成前 files.size 为 0 占位，合并后写入真实字节数。
 // ext 接受 *sqlx.DB 或 *sqlx.Tx，使调用方可在事务内复用此方法（executor 接口模式）。

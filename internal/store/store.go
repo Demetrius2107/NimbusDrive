@@ -36,23 +36,25 @@ func New(ctx context.Context, dsn string, maxOpen, maxIdle int) (*Store, error) 
 
 // Repositories 聚合所有 repository，便于一次注入到 service/handler 层。
 type Repositories struct {
-	Users   *UserRepo
-	Files   *FileRepo
-	Hashes  *FileHashRepo
-	Uploads *UploadSessionRepo
-	Shares  *ShareRepo
-	Quotas  *QuotaRepo
+	Users        *UserRepo
+	Files        *FileRepo
+	Hashes       *FileHashRepo
+	Uploads      *UploadSessionRepo
+	Shares       *ShareRepo
+	Quotas       *QuotaRepo
+	AppPasswords *AppPasswordRepo
 }
 
 // Repos 返回聚合 repository 结构。
 func (s *Store) Repos() *Repositories {
 	return &Repositories{
-		Users:   &UserRepo{db: s.DB},
-		Files:   &FileRepo{db: s.DB},
-		Hashes:  &FileHashRepo{db: s.DB},
-		Uploads: &UploadSessionRepo{db: s.DB},
-		Shares:  &ShareRepo{db: s.DB},
-		Quotas:  &QuotaRepo{db: s.DB},
+		Users:        &UserRepo{db: s.DB},
+		Files:        &FileRepo{db: s.DB},
+		Hashes:       &FileHashRepo{db: s.DB},
+		Uploads:      &UploadSessionRepo{db: s.DB},
+		Shares:       &ShareRepo{db: s.DB},
+		Quotas:       &QuotaRepo{db: s.DB},
+		AppPasswords: &AppPasswordRepo{db: s.DB},
 	}
 }
 
