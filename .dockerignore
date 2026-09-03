@@ -1,0 +1,9 @@
+# Go 构建上下文瘦身：前端/文档/本地产物不进 Go 镜像。
+.git
+web
+logs
+*.log
+deploy
+docs
+scripts
+*.md

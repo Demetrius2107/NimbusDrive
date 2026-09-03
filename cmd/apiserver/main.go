@@ -34,7 +34,12 @@ import (
 )
 
 func main() {
-	cfg, err := config.Load("config.dev")
+	// 配置名可用 NIMBUS_CONFIG_NAME 覆盖（容器部署用 config.prod），默认开发配置。
+	cfgName := os.Getenv("NIMBUS_CONFIG_NAME")
+	if cfgName == "" {
+		cfgName = "config.dev"
+	}
+	cfg, err := config.Load(cfgName)
 	if err != nil {
 		// 配置加载失败时尚无 logger，直接输出到 stderr。
 		panic("load config: " + err.Error())
