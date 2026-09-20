@@ -10,25 +10,31 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/domain"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
+	"github.com/jmoiron/sqlx"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/net/webdav"
 )
 
-// FS 是 NimbusDrive 的 webdav.FileSystem 适配器（W1 只读）。
+// FS 是 NimbusDrive 的 webdav.FileSystem 适配器（W2 可写）。
 // 官方库 webdav.Handler 负责 PROPFIND XML / Depth / LOCK 等协议细节，
-// 本结构只做接口桥接：路径解析 → FileRepo，文件字节流 → MinIO。
+// 本结构只做接口桥接：路径解析 → FileRepo，文件字节流 → 对象存储，
+// 写路径（PUT/MKCOL/DELETE/MOVE）见 write.go。
 type FS struct {
-	files    *store.FileRepo
-	mc       *storage.MinIO
+	db       *sqlx.DB
+	repos    *store.Repositories
+	mc       BlobStore
 	resolver *PathResolver
+	outbox   *store.OutboxRepo
 }
 
-// New 构造 FS。
-func New(files *store.FileRepo, mc *storage.MinIO) *FS {
+// New 构造 FS。outbox 可为 nil（事件总线不可用时降级，跳过 outbox 写入）。
+func New(db *sqlx.DB, repos *store.Repositories, mc BlobStore, outbox *store.OutboxRepo) *FS {
 	return &FS{
-		files:    files,
+		db:       db,
+		repos:    repos,
 		mc:       mc,
-		resolver: NewPathResolver(files),
+		resolver: NewPathResolver(repos.Files),
+		outbox:   outbox,
 	}
 }
 
@@ -48,14 +54,13 @@ func (f *FS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	return newFileInfo(node), nil
 }
 
-// OpenFile 只读打开。
-// 文件：MinIO GetObject 返回的 *minio.Object 原生支持 Read/Seek/Close。
-// 目录：返回 dirFile，Readdir 时分页拉取子节点。
-// 写打开（O_WRONLY/O_RDWR/O_CREATE/O_TRUNC/O_APPEND）W1 返回 ErrWriteUnsupported
-// → webdav.Handler 映射为 403/409，W2 落地 PUT 流程后放开。
+// OpenFile 按打开标志分发：
+// 写打开（O_WRONLY/O_RDWR/O_CREATE/O_TRUNC/O_APPEND/O_EXCL）→ openWriteFile
+// （PUT 流程：Write 流式写入，Close 落库，见 write.go）；
+// 只读打开：文件 → 对象存储 GetObject（原生支持 Read/Seek/Close），目录 → dirFile。
 func (f *FS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (webdav.File, error) {
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND|os.O_EXCL) != 0 {
-		return nil, ErrWriteUnsupported
+		return f.openWriteFile(ctx, name)
 	}
 
 	uid, err := userID(ctx)
@@ -78,26 +83,11 @@ func (f *FS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMo
 	if node.StoragePath == nil {
 		return nil, os.ErrNotExist
 	}
-	obj, err := f.mc.GetObject(ctx, *node.StoragePath, minio.GetObjectOptions{})
+	obj, err := f.mc.GetObjectStream(ctx, *node.StoragePath, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
 	}
 	return &readFile{obj: obj, fi: fi}, nil
-}
-
-// Mkdir W1 未实现（W2 桥接 files.Create(is_folder=true)，父不存在应返回 os.ErrNotExist）。
-func (f *FS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
-	return ErrWriteUnsupported
-}
-
-// RemoveAll W1 未实现（W2 桥接 SoftDelete/SoftDeleteRecursive 进回收站）。
-func (f *FS) RemoveAll(ctx context.Context, name string) error {
-	return ErrWriteUnsupported
-}
-
-// Rename W1 未实现（W2 桥接 FileRepo.Rename/Move：同父改名 vs 跨父移动）。
-func (f *FS) Rename(ctx context.Context, oldName, newName string) error {
-	return ErrWriteUnsupported
 }
 
 // --- FileInfo ---
@@ -121,7 +111,7 @@ func (fi fileInfo) Mode() os.FileMode {
 	if fi.node.IsFolder {
 		return os.ModeDir | 0o755
 	}
-	return 0o444 // W1 只读挂载
+	return 0o644 // 可写挂载：常规读写位
 }
 func (fi fileInfo) Sys() any { return nil }
 
@@ -203,7 +193,7 @@ func (df *dirFile) Readdir(int) ([]os.FileInfo, error) {
 	page := 1
 	var out []os.FileInfo
 	for {
-		nodes, total, err := df.fs.files.ListByParent(ctx, df.uid, df.parent, page, 200)
+		nodes, total, err := df.fs.repos.Files.ListByParent(ctx, df.uid, df.parent, page, 200)
 		if err != nil {
 			return nil, err
 		}
@@ -246,4 +236,5 @@ var (
 	_ os.FileInfo         = rootFileInfo{}
 	_ webdav.ETager       = fileInfo{}
 	_ webdav.ContentTyper = fileInfo{}
+	_ BlobStore           = (*storage.MinIO)(nil)
 )

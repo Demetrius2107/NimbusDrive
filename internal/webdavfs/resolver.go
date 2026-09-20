@@ -1,9 +1,9 @@
 // Package webdavfs 把 NimbusDrive 的 FileRepo / MinIO 桥接为
 // golang.org/x/net/webdav.FileSystem，供 TransferServer /dav 挂载点使用。
-// 设计文档：docs/protocol-specs/webdav.md（决策 D3 路径解析、D5 删除语义）。
+// 设计文档：docs/protocol-specs/webdav.md（决策 D3 路径解析、D4 PUT 写入、D5 删除语义）。
 //
-// W1 范围为只读挂载：Stat / OpenFile(R) / Readdir 可用，
-// Mkdir / RemoveAll / Rename 与写打开返回 ErrNotImplemented，W2 落地。
+// W1 落地只读挂载：Stat / OpenFile(R) / Readdir 可用。
+// W2 落地可写挂载：PUT（D4 全流程）+ MKCOL + DELETE + MOVE，见 write.go。
 package webdavfs
 
 import (
@@ -40,8 +40,8 @@ func userID(ctx context.Context) (int64, error) {
 // ErrUnauthorized 表示 context 中没有 userID（挂载层装配错误）。
 var ErrUnauthorized = errors.New("webdavfs: context 缺少 user id")
 
-// ErrWriteUnsupported 表示 W1 只读挂载不支持该写操作。
-var ErrWriteUnsupported = errors.New("webdavfs: 写操作尚未实现（W2）")
+// ErrWriteUnsupported 表示只读句柄不支持写操作（写打开走 writeFile，不会到这里）。
+var ErrWriteUnsupported = errors.New("webdavfs: 只读句柄不支持写操作")
 
 // PathResolver 把 WebDAV 深度路径解析为 files 表节点。
 // 邻接表无 path 列，从根逐段 GetChildByName（唯一索引 (user_id, parent_id, name)）。
@@ -63,10 +63,34 @@ func (p *PathResolver) Resolve(ctx context.Context, uid int64, name string) (*do
 	if err != nil {
 		return nil, err
 	}
-	if len(segments) == 0 {
-		return nil, nil // 根
-	}
+	return p.resolveSegments(ctx, uid, segments)
+}
 
+// ResolveParent 拆出父目录与末端名（写操作用）。
+// 返回末端名对应的父节点：用户根目录下返回 (nil, 末端名, nil)（根是虚拟目录，恒为目录）；
+// 路径本身是根时返回 os.ErrInvalid（根不可作为写操作对象）。父目录不存在返回
+// os.ErrNotExist（webdav.Handler 映射为 409）。调用方需检查父节点 IsFolder——
+// 父是文件时同样以 os.ErrNotExist 拒绝（PUT /a.docx/b.txt 语义上父不存在）。
+func (p *PathResolver) ResolveParent(ctx context.Context, uid int64, name string) (*domain.FileNode, string, error) {
+	segments, err := splitSegments(name)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(segments) == 0 {
+		return nil, "", os.ErrInvalid // 根不可写
+	}
+	if len(segments) == 1 {
+		return nil, segments[0], nil // 用户根目录直接挂末端名
+	}
+	parentNode, err := p.resolveSegments(ctx, uid, segments[:len(segments)-1])
+	if err != nil {
+		return nil, "", err
+	}
+	return parentNode, segments[len(segments)-1], nil
+}
+
+// resolveSegments 逐段 GetChildByName 解析已解码的段列表，空切片表示根（nil, nil）。
+func (p *PathResolver) resolveSegments(ctx context.Context, uid int64, segments []string) (*domain.FileNode, error) {
 	var parent *int64
 	var node *domain.FileNode
 	for _, seg := range segments {
