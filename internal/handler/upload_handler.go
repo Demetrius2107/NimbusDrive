@@ -502,16 +502,11 @@ func buildUploadPayload(fileID, userID int64, hash string, size int64, storagePa
 }
 
 // precheckQuota 配额预检（非原子，仅避免无意义创建会话；真正扣减在 complete 事务）。
-// 同时检查存储配额（users 表）与月度传输配额（quota_periods 表）。
+// 同时检查存储配额（users 表，QuotaRepo.CheckStorage）与月度传输配额（quota_periods 表）。
 func (h *UploadHandler) precheckQuota(ctx context.Context, userID, size int64) error {
-	var quota, used int64
-	err := h.db.QueryRowxContext(ctx,
-		`SELECT storage_quota, used_storage FROM users WHERE id = $1`, userID).Scan(&quota, &used)
-	if err != nil {
-		return fmt.Errorf("query quota: %w", err)
-	}
-	if used+size > quota {
-		return domain.ErrQuotaExceeded
+	// 存储配额预检（复用挂载层同款 repo 方法，消除原内联 SQL 漂移）。
+	if err := h.repos.Quotas.CheckStorage(ctx, userID, size); err != nil {
+		return err
 	}
 	// 月度上传传输配额检查（只检查不扣，完成时由消费者扣）
 	if err := h.repos.Quotas.CheckUpload(ctx, userID, size); err != nil {

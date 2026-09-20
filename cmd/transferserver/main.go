@@ -194,13 +194,13 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 		logger.L.Warn("download routes disabled: store or minio unavailable")
 	}
 
-	// WebDAV 挂载点（W1 只读）：/dav/**，Basic Auth（应用专用密码）。
+	// WebDAV 挂载点（W2 可写）：/dav/**，Basic Auth（应用专用密码）。
 	// 设计文档 docs/protocol-specs/webdav.md 决策 D1：webdav.Handler 是标准
 	// http.Handler，与 /metrics 同用 common/adaptor 桥接 net/http 组件。
 	if st != nil && mc != nil {
 		repos := st.Repos()
 		davHandler := &webdav.Handler{
-			FileSystem: webdavfs.New(repos.Files, mc),
+			FileSystem: webdavfs.New(st.DB, repos, mc, store.NewOutboxRepo(st.DB)),
 			LockSystem: webdav.NewMemLS(),
 		}
 		authMW := middleware.HertzBasicAuthAppPassword(repos.Users, repos.AppPasswords)
@@ -212,6 +212,14 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 		}
 		davFn := func(ctx context.Context, c *app.RequestContext) {
 			uid := middleware.HertzUserID(c)
+			// PUT 配额预检：超限在挂载层直接 507（FileSystem 层的 Close 错误
+			// 只映射 404/405，承载不了 507；事务内扣减仍是最终兜底）。
+			if string(c.Method()) == "PUT" && c.Request.Header.ContentLength() > 0 {
+				if err := checkDavPutQuota(ctx, repos.Quotas, uid, int64(c.Request.Header.ContentLength())); err != nil {
+					c.AbortWithStatus(consts.StatusInsufficientStorage)
+					return
+				}
+			}
 			req, err := adaptor.GetCompatRequest(&c.Request)
 			if err != nil {
 				c.AbortWithStatus(consts.StatusInternalServerError)
@@ -249,6 +257,15 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	} else {
 		logger.L.Warn("share download route disabled: store/minio/redis unavailable")
 	}
+}
+
+// checkDavPutQuota WebDAV PUT 配额预检：存储配额（users 表）+ 月度传输配额
+// （quota_periods 表）。超限返回 ErrQuotaExceeded，由调用方拦 507。
+func checkDavPutQuota(ctx context.Context, r *store.QuotaRepo, uid, size int64) error {
+	if err := r.CheckStorage(ctx, uid, size); err != nil {
+		return err
+	}
+	return r.CheckUpload(ctx, uid, size)
 }
 
 // healthz 健康检查：检查 PG/Redis/MinIO 连通性。
