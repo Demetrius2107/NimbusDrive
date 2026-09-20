@@ -86,6 +86,25 @@ func (r *QuotaRepo) CheckUpload(ctx context.Context, userID, size int64) error {
 	return nil
 }
 
+// CheckStorage 预检用户存储配额是否足够（users 表，只检查不扣）。
+// 与 handler.UploadHandler.precheckQuota 的存储部分同语义；WebDAV PUT
+// 挂载层用，超限在挂载层直接拦 507（FileSystem 层错误只映射 404/405）。
+func (r *QuotaRepo) CheckStorage(ctx context.Context, userID, size int64) error {
+	var quota, used int64
+	err := r.db.QueryRowxContext(ctx,
+		`SELECT storage_quota, used_storage FROM users WHERE id = $1`, userID).Scan(&quota, &used)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return fmt.Errorf("query storage quota: %w", err)
+	}
+	if used+size > quota {
+		return domain.ErrQuotaExceeded
+	}
+	return nil
+}
+
 // IncrUpload 原子增加当月上传字节，带配额上限校验。
 // upload_quota = 0 表示不限。affected=0 → 超限 → ErrQuotaExceeded。
 func (r *QuotaRepo) IncrUpload(ctx context.Context, userID, delta int64) error {

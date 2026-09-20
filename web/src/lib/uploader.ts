@@ -98,19 +98,22 @@ function bufferToHex(buffer: ArrayBuffer): string {
 }
 
 // 秒传判定 / 创建上传会话。
+// 注意：parent_id 为 null（根目录）时必须省略字段——契约里它是 integer，
+// 且 additionalProperties:false，发 null 会被 400 拒绝。
 async function checkHash(
   hash: string,
   file: File,
   parentId?: number | null,
 ): Promise<CheckHashResponse> {
+  const body: Record<string, unknown> = {
+    hash_sha256: hash,
+    size: file.size,
+    name: file.name,
+  }
+  if (parentId != null) body.parent_id = parentId
   const resp = await http.post<{ code: string; message: string; data: CheckHashResponse }>(
     '/upload/check-hash',
-    {
-      hash_sha256: hash,
-      size: file.size,
-      name: file.name,
-      parent_id: parentId ?? null,
-    },
+    body,
   )
   return resp.data.data
 }

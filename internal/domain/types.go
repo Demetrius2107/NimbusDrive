@@ -124,6 +124,18 @@ type QuotaPeriod struct {
 	UpdatedAt     string `db:"updated_at" json:"updated_at"`
 }
 
+// AppPassword 对应 app_passwords 表（应用专用密码，协议客户端认证）。
+// 明文密码仅在创建响应中返回一次，库中只存 bcrypt 哈希。
+type AppPassword struct {
+	ID          int64   `db:"id" json:"id"`
+	UserID      int64   `db:"user_id" json:"user_id"`
+	Name        string  `db:"name" json:"name"`
+	PasswordHash string `db:"password_hash" json:"-"`
+	LastUsedAt  *string `db:"last_used_at" json:"last_used_at,omitempty"`
+	Revoked     bool    `db:"revoked" json:"revoked"`
+	CreatedAt   string  `db:"created_at" json:"created_at"`
+}
+
 // ErrorCode 是统一业务错误码。
 type ErrorCode string
 

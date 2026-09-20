@@ -144,6 +144,17 @@ func (m *MinIO) GetObject(ctx context.Context, objectKey string, opts minio.GetO
 	return obj, nil
 }
 
+// GetObjectStream 获取对象只读流（io.ReadSeekCloser）。
+// webdavfs 的 BlobStore 消费方接口用：*minio.Object 原生满足该接口，
+// 但 Go 接口要求返回类型完全一致，此处显式收窄。
+func (m *MinIO) GetObjectStream(ctx context.Context, objectKey string, opts minio.GetObjectOptions) (io.ReadSeekCloser, error) {
+	obj, err := m.GetObject(ctx, objectKey, opts)
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
 // StatObject 获取对象元信息（大小等）。
 func (m *MinIO) StatObject(ctx context.Context, objectKey string) (minio.ObjectInfo, error) {
 	info, err := m.Client.StatObject(ctx, m.Bucket, objectKey, minio.StatObjectOptions{})
@@ -158,6 +169,19 @@ func (m *MinIO) RemoveObject(ctx context.Context, objectKey string) error {
 	err := m.Client.RemoveObject(ctx, m.Bucket, objectKey, minio.RemoveObjectOptions{})
 	if err != nil {
 		return fmt.Errorf("remove object: %w", err)
+	}
+	return nil
+}
+
+// CopyObject 服务端复制对象（同桶内拷贝，不过字节流）。
+// WebDAV PUT 写入路径用：临时对象 tmp/{uuid} 合并完成后拷贝到内容寻址 key，
+// 不占传输带宽；同 hash 命中时目标对象已存在，重复复制为等值覆盖，幂等安全。
+func (m *MinIO) CopyObject(ctx context.Context, srcKey, dstKey string) error {
+	_, err := m.Client.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: m.Bucket, Object: dstKey},
+		minio.CopySrcOptions{Bucket: m.Bucket, Object: srcKey})
+	if err != nil {
+		return fmt.Errorf("copy object: %w", err)
 	}
 	return nil
 }

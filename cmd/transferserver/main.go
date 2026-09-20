@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,8 +22,9 @@ import (
 	"github.com/Demetrius2107/NimbusDrive/internal/metrics"
 	"github.com/Demetrius2107/NimbusDrive/internal/middleware"
 	"github.com/Demetrius2107/NimbusDrive/internal/storage"
-	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
 	"github.com/Demetrius2107/NimbusDrive/internal/store"
+	"github.com/Demetrius2107/NimbusDrive/internal/tracing"
+	"github.com/Demetrius2107/NimbusDrive/internal/webdavfs"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
@@ -29,6 +32,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"golang.org/x/net/webdav"
 )
 
 func main() {
@@ -190,6 +194,61 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 		logger.L.Warn("download routes disabled: store or minio unavailable")
 	}
 
+	// WebDAV 挂载点（W2 可写）：/dav/**，Basic Auth（应用专用密码）。
+	// 设计文档 docs/protocol-specs/webdav.md 决策 D1：webdav.Handler 是标准
+	// http.Handler，与 /metrics 同用 common/adaptor 桥接 net/http 组件。
+	if st != nil && mc != nil {
+		repos := st.Repos()
+		davHandler := &webdav.Handler{
+			FileSystem: webdavfs.New(st.DB, repos, mc, store.NewOutboxRepo(st.DB)),
+			LockSystem: webdav.NewMemLS(),
+		}
+		authMW := middleware.HertzBasicAuthAppPassword(repos.Users, repos.AppPasswords)
+		// 注意：Hertz 的 h.Any 只注册标准方法，WebDAV 扩展方法（PROPFIND 等）
+		// 必须逐个显式注册，否则挂载客户端全部 404。
+		davMethods := []string{
+			"OPTIONS", "GET", "HEAD", "PUT", "POST", "DELETE", // 标准方法
+			"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", // RFC 4918 扩展
+		}
+		davFn := func(ctx context.Context, c *app.RequestContext) {
+			uid := middleware.HertzUserID(c)
+			// PUT 配额预检：超限在挂载层直接 507（FileSystem 层的 Close 错误
+			// 只映射 404/405，承载不了 507；事务内扣减仍是最终兜底）。
+			if string(c.Method()) == "PUT" && c.Request.Header.ContentLength() > 0 {
+				if err := checkDavPutQuota(ctx, repos.Quotas, uid, int64(c.Request.Header.ContentLength())); err != nil {
+					c.AbortWithStatus(consts.StatusInsufficientStorage)
+					return
+				}
+			}
+			req, err := adaptor.GetCompatRequest(&c.Request)
+			if err != nil {
+				c.AbortWithStatus(consts.StatusInternalServerError)
+				return
+			}
+			// 挂载点前缀剥离：FileSystem 收到的路径以 "/" 为根
+			trimmed := strings.TrimPrefix(req.URL.Path, "/dav")
+			if trimmed == "" {
+				trimmed = "/"
+			}
+			req.URL.Path = trimmed
+			req.URL.RawPath = ""
+			req = req.WithContext(webdavfs.WithUserID(ctx, uid))
+			rw := &davResponseWriter{ResponseWriter: adaptor.GetCompatResponseWriter(&c.Response)}
+			davHandler.ServeHTTP(rw, req)
+			// webdav.Handler 的 OPTIONS 等路径只设头不写状态码（status=0 时
+			// 依赖 net/http 隐式 200 收尾），compat writer 不会自动 flush，
+			// 这里显式补写，否则 DAV/Allow 能力头丢失。
+			if !rw.wrote {
+				rw.WriteHeader(http.StatusOK)
+			}
+		}
+		for _, m := range davMethods {
+			h.Handle(m, "/dav/*path", authMW, davFn)
+		}
+	} else {
+		logger.L.Warn("webdav /dav routes disabled: store or minio unavailable")
+	}
+
 	// 分享下载兑换：公开端点，无 JWT。凭能力令牌兑换预签名直连 URL。
 	// 三依赖齐全才注册：rc 兑换令牌、st 查文件、mc 签 URL。
 	if st != nil && mc != nil && rc != nil {
@@ -198,6 +257,15 @@ func registerRoutes(h *server.Hertz, st *store.Store, rc *cache.Redis, mc *stora
 	} else {
 		logger.L.Warn("share download route disabled: store/minio/redis unavailable")
 	}
+}
+
+// checkDavPutQuota WebDAV PUT 配额预检：存储配额（users 表）+ 月度传输配额
+// （quota_periods 表）。超限返回 ErrQuotaExceeded，由调用方拦 507。
+func checkDavPutQuota(ctx context.Context, r *store.QuotaRepo, uid, size int64) error {
+	if err := r.CheckStorage(ctx, uid, size); err != nil {
+		return err
+	}
+	return r.CheckUpload(ctx, uid, size)
 }
 
 // healthz 健康检查：检查 PG/Redis/MinIO 连通性。
@@ -232,4 +300,21 @@ func healthz(st *store.Store, rc *cache.Redis, mc *storage.MinIO) app.HandlerFun
 
 		c.JSON(status, utils.H{"status": "ok", "service": "transfer", "checks": checks})
 	}
+}
+
+// davResponseWriter 记录是否已写出（Write/WriteHeader 任一），
+// 供挂载层在 webdav.Handler 返回后补写隐式 200（OPTIONS 场景）。
+type davResponseWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *davResponseWriter) Write(b []byte) (int, error) {
+	w.wrote = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *davResponseWriter) WriteHeader(code int) {
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(code)
 }

@@ -83,7 +83,29 @@ func (r *FileRepo) ListByParent(ctx context.Context, userID int64, parentID *int
 	if err := r.db.GetContext(ctx, &total, countQ, userID, parentID); err != nil {
 		return nil, 0, fmt.Errorf("count files: %w", err)
 	}
-	return nodes, total, nil
+	return nonNil(nodes), total, nil
+}
+
+// GetChildByName 按 (user_id, parent_id, name) 精确取一个未删除的子节点。
+// 供 WebDAV 路径逐段解析使用（邻接表无 path 列，逐段定位走唯一索引）。
+// 未完成上传的文件（status != 'completed'）视为不存在，挂载端不暴露中间态。
+// parentID 为 nil 表示在用户根目录下查找。
+func (r *FileRepo) GetChildByName(ctx context.Context, userID int64, parentID *int64, name string) (*domain.FileNode, error) {
+	const q = `
+		SELECT ` + fileCols + ` FROM files
+		WHERE user_id = $1 AND deleted_at IS NULL AND name = $2 AND
+		      ((parent_id IS NULL AND $3::bigint IS NULL) OR parent_id = $3)`
+	var node domain.FileNode
+	if err := r.db.GetContext(ctx, &node, q, userID, name, parentID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("get child by name: %w", err)
+	}
+	if !node.IsFolder && node.Status != domain.FileStatusCompleted {
+		return nil, domain.ErrNotFound
+	}
+	return &node, nil
 }
 
 // MarkCompleted 上传完成回写：状态置 completed，记录哈希、存储路径、分块数、实际大小。
@@ -216,7 +238,7 @@ func (r *FileRepo) Subtree(ctx context.Context, folderID int64) ([]domain.FileNo
 	if err := r.db.SelectContext(ctx, &nodes, q, folderID); err != nil {
 		return nil, fmt.Errorf("subtree query: %w", err)
 	}
-	return nodes, nil
+	return nonNil(nodes), nil
 }
 
 // ListTrash 列出某用户回收站中的节点（deleted_at IS NOT NULL），分页。
@@ -246,7 +268,7 @@ func (r *FileRepo) ListTrash(ctx context.Context, userID int64, page, size int) 
 	if err := r.db.GetContext(ctx, &total, countQ, userID); err != nil {
 		return nil, 0, fmt.Errorf("count trash: %w", err)
 	}
-	return nodes, total, nil
+	return nonNil(nodes), total, nil
 }
 
 // ListExpiredTrash 列出回收站中超过保留期的顶层节点（deleted_at < now()-retention）。

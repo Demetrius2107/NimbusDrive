@@ -291,6 +291,15 @@ func registerRoutes(r *gin.Engine, st *store.Store, rc *cache.Redis, adb *admins
 				authGrp.POST("/register", authHandler.Register)
 				authGrp.POST("/login", authHandler.Login)
 				authGrp.GET("/me", middleware.GinJWTAuth(jwtMgr), authHandler.Me)
+
+				// 应用专用密码（WebDAV 等协议客户端凭据），需 JWT 鉴权
+				apHandler := handler.NewAppPasswordHandler(st.Repos().AppPasswords)
+				apGrp := authGrp.Group("/app-passwords", middleware.GinJWTAuth(jwtMgr))
+				{
+					apGrp.POST("", apHandler.Create)
+					apGrp.GET("", apHandler.List)
+					apGrp.DELETE("/:id", apHandler.Revoke)
+				}
 			}
 		} else {
 			logger.L.Warn("postgres unavailable, /auth routes disabled")
