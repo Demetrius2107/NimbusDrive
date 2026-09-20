@@ -1,6 +1,7 @@
 package webdavfs
 
 import (
+	"context"
 	"errors"
 	"os"
 	"testing"
@@ -60,6 +61,42 @@ func TestSegmentsToPath(t *testing.T) {
 		if got := SegmentsToPath(tc.in); got != tc.want {
 			t.Errorf("SegmentsToPath(%v) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestResolveParent：父目录与末端名拆解（纯逻辑分支，FileRepo 为 nil——
+// 触库的多段用例在 integration_test.go 里覆盖）。
+func TestResolveParent(t *testing.T) {
+	p := &PathResolver{}
+	cases := []struct {
+		name     string
+		in       string
+		wantLeaf string
+		wantErr  error
+	}{
+		{"根不可写", "/", "", os.ErrInvalid},
+		{"单段挂用户根", "/文档", "文档", nil},
+		{"URL 编码单段", "/my%20docs", "my docs", nil},
+		{"父目录穿越", "/a/../secret", "", os.ErrNotExist},
+		{"当前目录段", "/a/./b", "", os.ErrNotExist},
+		{"非法编码", "/%", "", os.ErrInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parent, leaf, err := p.ResolveParent(context.Background(), 1, tc.in)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ResolveParent(%q) err = %v, want %v", tc.in, err, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				return
+			}
+			if leaf != tc.wantLeaf {
+				t.Fatalf("ResolveParent(%q) leaf = %q, want %q", tc.in, leaf, tc.wantLeaf)
+			}
+			if parent != nil {
+				t.Fatalf("单段父节点应为 nil（用户根），got %v", parent)
+			}
+		})
 	}
 }
 
