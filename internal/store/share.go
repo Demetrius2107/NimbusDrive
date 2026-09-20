@@ -99,7 +99,7 @@ func (r *ShareRepo) ListByUser(ctx context.Context, userID int64, page, size int
 	if err := r.db.GetContext(ctx, &total, countQ, userID); err != nil {
 		return nil, 0, fmt.Errorf("count shares: %w", err)
 	}
-	return shares, total, nil
+	return nonNil(shares), total, nil
 }
 
 // MarkExpired 标记分享已过期（缓存层发现 expires_at < now 时回写）。

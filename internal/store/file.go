@@ -83,7 +83,7 @@ func (r *FileRepo) ListByParent(ctx context.Context, userID int64, parentID *int
 	if err := r.db.GetContext(ctx, &total, countQ, userID, parentID); err != nil {
 		return nil, 0, fmt.Errorf("count files: %w", err)
 	}
-	return nodes, total, nil
+	return nonNil(nodes), total, nil
 }
 
 // GetChildByName 按 (user_id, parent_id, name) 精确取一个未删除的子节点。
@@ -238,7 +238,7 @@ func (r *FileRepo) Subtree(ctx context.Context, folderID int64) ([]domain.FileNo
 	if err := r.db.SelectContext(ctx, &nodes, q, folderID); err != nil {
 		return nil, fmt.Errorf("subtree query: %w", err)
 	}
-	return nodes, nil
+	return nonNil(nodes), nil
 }
 
 // ListTrash 列出某用户回收站中的节点（deleted_at IS NOT NULL），分页。
@@ -268,7 +268,7 @@ func (r *FileRepo) ListTrash(ctx context.Context, userID int64, page, size int) 
 	if err := r.db.GetContext(ctx, &total, countQ, userID); err != nil {
 		return nil, 0, fmt.Errorf("count trash: %w", err)
 	}
-	return nodes, total, nil
+	return nonNil(nodes), total, nil
 }
 
 // ListExpiredTrash 列出回收站中超过保留期的顶层节点（deleted_at < now()-retention）。

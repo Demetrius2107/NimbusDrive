@@ -34,6 +34,15 @@ func New(ctx context.Context, dsn string, maxOpen, maxIdle int) (*Store, error) 
 	return &Store{DB: db}, nil
 }
 
+// nonNil 保证列表切片非 nil：空查询结果序列化为 [] 而非 null，
+// 前端契约假定列表字段永远是数组（null 会让 JS 侧 .map() 崩溃）。
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
 // Repositories 聚合所有 repository，便于一次注入到 service/handler 层。
 type Repositories struct {
 	Users        *UserRepo

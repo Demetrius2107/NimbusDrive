@@ -40,5 +40,9 @@ func (r *FileRepo) ListFiles(ctx context.Context, page, size int, userID int64) 
 	if err := q.Order("created_at DESC").Limit(size).Offset(offset).Find(&files).Error; err != nil {
 		return nil, 0, fmt.Errorf("list files: %w", err)
 	}
+	if files == nil {
+		// 空结果序列化为 [] 而非 null，前端契约假定列表永远是数组
+		files = []File{}
+	}
 	return files, total, nil
 }

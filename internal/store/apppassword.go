@@ -34,7 +34,7 @@ func (r *AppPasswordRepo) ListByUser(ctx context.Context, userID int64) ([]domai
 	if err := r.db.SelectContext(ctx, &list, q, userID); err != nil {
 		return nil, fmt.Errorf("list app_passwords: %w", err)
 	}
-	return list, nil
+	return nonNil(list), nil
 }
 
 // ListActiveByUser 列出用户未吊销的应用密码（Basic Auth 逐个 bcrypt 比对用）。
